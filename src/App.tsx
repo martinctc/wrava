@@ -3,8 +3,18 @@ import CodeMirror, { ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import { Crepe } from "@milkdown/crepe";
-import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import {
+  DEMO_BANNER,
+  chooseWorkspaceFolder,
+  createDocument as backendCreateDocument,
+  isDemoMode,
+  openWorkspace,
+  queryAnalytics,
+  readDocument,
+  refreshWorkspace as backendRefreshWorkspace,
+  renameDocument as backendRenameDocument,
+  saveDocument as backendSaveDocument,
+} from "./backend";
 import {
   CartesianGrid,
   Line,
@@ -17,88 +27,13 @@ import {
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import "./App.css";
-
-type ActivityStats = {
-  todayAdded: number;
-  weekAdded: number;
-  monthAdded: number;
-  yearAdded: number;
-  todayNet: number;
-  weekNet: number;
-  monthNet: number;
-  yearNet: number;
-  todayDocuments: number;
-  weekDocuments: number;
-  monthDocuments: number;
-  yearDocuments: number;
-};
-
-type WorkspaceView = {
-  root: string;
-  files: string[];
-  stats: ActivityStats;
-};
-
-type DocumentView = {
-  path: string;
-  content: string;
-  wordCount: number;
-  tags: string[];
-};
-
-type DocumentResult = {
-  workspace: WorkspaceView;
-  document: DocumentView;
-};
-
-type DailyActivity = {
-  date: string;
-  wordsAdded: number;
-  wordsDeleted: number;
-  netChange: number;
-  activeDocuments: number;
-};
-
-type DocumentActivity = {
-  path: string;
-  currentWordCount: number;
-  wordsAdded: number;
-  wordsDeleted: number;
-  netChange: number;
-  tags: string[];
-};
-
-type TagActivity = {
-  tag: string;
-  documents: number;
-  wordsAdded: number;
-  wordsDeleted: number;
-  netChange: number;
-};
-
-type AnalyticsView = {
-  daily: DailyActivity[];
-  documents: DocumentActivity[];
-  activeDays: number;
-  activeDocuments: number;
-  currentWordCount: number;
-  tags: TagActivity[];
-};
-
-const emptyStats: ActivityStats = {
-  todayAdded: 0,
-  weekAdded: 0,
-  monthAdded: 0,
-  yearAdded: 0,
-  todayNet: 0,
-  weekNet: 0,
-  monthNet: 0,
-  yearNet: 0,
-  todayDocuments: 0,
-  weekDocuments: 0,
-  monthDocuments: 0,
-  yearDocuments: 0,
-};
+import {
+  AnalyticsView,
+  DocumentResult,
+  DocumentView,
+  WorkspaceView,
+  emptyStats,
+} from "./types";
 
 function App() {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -138,11 +73,9 @@ function App() {
     if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes and change folder?")) {
       return;
     }
-    const selected = await open({ directory: true, multiple: false });
+    const selected = await chooseWorkspaceFolder();
     if (!selected) return;
-    const next = await run(() =>
-      invoke<WorkspaceView>("open_workspace", { path: selected }),
-    );
+    const next = await run(() => openWorkspace(selected));
     setWorkspace(next);
     setDocument(null);
     setAnalytics(null);
@@ -163,7 +96,7 @@ function App() {
     if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes?")) {
       return;
     }
-    const next = await run(() => invoke<DocumentView>("read_document", { path }));
+    const next = await run(() => readDocument(path));
     setDocument(next);
     setContent(next.content);
     setSavedContent(next.content);
@@ -173,13 +106,7 @@ function App() {
 
   async function saveDocument() {
     if (!document || (!contentChanged && !tagsChanged)) return;
-    const saved = await run(() =>
-      invoke<DocumentResult>("save_document", {
-        path: document.path,
-        content,
-        tags: parsedTags,
-      }),
-    );
+    const saved = await run(() => backendSaveDocument(document.path, content, parsedTags));
     applyDocumentResult(saved, true);
     setStatus("Saved and activity updated.");
   }
@@ -188,9 +115,7 @@ function App() {
     event.preventDefault();
     setDocumentModalError("");
     try {
-      const created = await run(() =>
-        invoke<DocumentResult>("create_document", { name: documentName }),
-      );
+      const created = await run(() => backendCreateDocument(documentName));
       applyDocumentResult(created);
       setCreatingDocument(false);
       setStatus(`Created ${created.document.path}.`);
@@ -204,12 +129,7 @@ function App() {
     if (!document) return;
     setDocumentModalError("");
     try {
-      const renamed = await run(() =>
-        invoke<DocumentResult>("rename_document", {
-          path: document.path,
-          name: documentName,
-        }),
-      );
+      const renamed = await run(() => backendRenameDocument(document.path, documentName));
       applyDocumentResult(renamed);
       setRenamingDocument(false);
       setStatus(`Renamed to ${renamed.document.path}.`);
@@ -235,7 +155,7 @@ function App() {
 
   async function refreshWorkspace() {
     if (!workspace) return;
-    const next = await run(() => invoke<WorkspaceView>("refresh_workspace"));
+    const next = await run(() => backendRefreshWorkspace());
     setWorkspace(next);
     setAnalytics(null);
     if (
@@ -244,9 +164,7 @@ function App() {
       && !tagsChanged
       && next.files.includes(document.path)
     ) {
-      const refreshed = await invoke<DocumentView>("read_document", {
-        path: document.path,
-      });
+      const refreshed = await readDocument(document.path);
       setDocument(refreshed);
       setContent(refreshed.content);
       setSavedContent(refreshed.content);
@@ -261,7 +179,7 @@ function App() {
     if ((contentChanged || tagsChanged) && !window.confirm("Open analytics without saving your changes?")) {
       return;
     }
-    const next = await run(() => invoke<AnalyticsView>("query_analytics"));
+    const next = await run(() => queryAnalytics());
     setAnalytics(next);
     setFocusMode(false);
     setPage("analytics");
@@ -347,8 +265,21 @@ function App() {
     normalizedTagInput.length !== normalizedSavedTags.length
     || normalizedTagInput.some((tag, index) => tag !== normalizedSavedTags[index]);
 
+  const shellClasses = [
+    "app-shell",
+    focusMode ? "focus-mode" : "",
+    isDemoMode() && !focusMode ? "has-demo-banner" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main className={focusMode ? "app-shell focus-mode" : "app-shell"}>
+    <main className={shellClasses}>
+      {isDemoMode() && !focusMode && (
+        <div className="demo-banner" role="status">
+          {DEMO_BANNER}
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">W</span>

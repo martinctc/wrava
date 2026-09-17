@@ -29,6 +29,25 @@ button {
     #f3f1e9;
 }
 
+.demo-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: 6px 16px;
+  font-size: 12px;
+  text-align: center;
+  background: #fff4d6;
+  color: #6b5a20;
+  border-bottom: 1px solid #e8d9a0;
+}
+
+.app-shell.has-demo-banner {
+  padding-top: 30px;
+}
+
+
 .topbar {
   display: flex;
   align-items: center;
