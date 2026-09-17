@@ -6,6 +6,9 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
+  // Allows the GitHub Pages workflow to build the demo for a project-site
+  // subpath (e.g. /wrava/demo/) while local dev and the Tauri app keep "/".
+  base: process.env.WRAVA_DEMO_BASE || "/",
   plugins: [react()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

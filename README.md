@@ -5,6 +5,9 @@ lightweight "Strava for writing." Your writing stays in ordinary Markdown
 files in a folder you control, while Wrava records additions and document
 growth locally.
 
+**[Try the live demo](https://martinctc.github.io/wrava/demo/)** in your
+browser (no install, nothing is saved) · [Landing page](https://martinctc.github.io/wrava/)
+
 |                                          |                                          |
 | ---------------------------------------- | ---------------------------------------- |
 | ![Write view](docs/screenshots/write.png) | ![Analytics view](docs/screenshots/analytics.png) |
