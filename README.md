@@ -5,6 +5,12 @@ lightweight "Strava for writing." Your writing stays in ordinary Markdown
 files in a folder you control, while Wrava records additions and document
 growth locally.
 
+|                                          |                                          |
+| ---------------------------------------- | ---------------------------------------- |
+| ![Write view](docs/screenshots/write.png) | ![Analytics view](docs/screenshots/analytics.png) |
+
+![Welcome screen](docs/screenshots/welcome.png)
+
 ## Current vertical slice
 
 - Select and index a folder of Markdown files.
