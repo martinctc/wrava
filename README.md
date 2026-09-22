@@ -91,6 +91,27 @@ to an installed `playwright-core` module and `WRAVA_BROWSER_PATH` to a Chromium
 executable. These tools can live outside the project. `WRAVA_TEST_URL` overrides
 the preview URL.
 
+## Versioning and releases
+
+Wrava follows [Semantic Versioning](https://semver.org/) and stays below
+`1.0.0` while the core feature set is still settling. User-facing changes are
+recorded in [NEWS.md](NEWS.md).
+
+The version number must match across `package.json`,
+`src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`.
+`npm test` runs `scripts/check-version.mjs`, which fails if any of these
+disagree, or if `NEWS.md` has no dated entry for the current version.
+
+To cut a release:
+
+1. Update the version in all four files above to the same value.
+2. Move the `NEWS.md` `## Unreleased` items under a new
+   `## <version> - <yyyy-mm-dd>` heading.
+3. Run `npm test` to confirm the version and changelog are consistent.
+4. Commit, merge to `master`, then tag the merge commit `v<version>` and push
+   the tag. The `release` workflow builds and attaches the Windows MSI and
+   NSIS installers automatically.
+
 ## Privacy
 
 Wrava does not upload document contents or activity data. Markdown files remain

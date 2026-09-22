@@ -15,7 +15,7 @@
     "url": "https://github.com/martinctc/wrava/issues"
   },
   "scripts": {
-    "test": "node --test tests/*.test.ts",
+    "test": "node --test tests/*.test.ts && node scripts/check-version.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
