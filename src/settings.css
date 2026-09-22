@@ -1,0 +1,58 @@
+.settings-panel,
+.spelling-menu {
+  color: #20231f;
+  background: #fbfaf6;
+  border: 1px solid #d8d7cf;
+  border-radius: 14px;
+  box-shadow: 0 14px 40px #0003;
+}
+
+.settings-panel {
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.settings-panel::backdrop { background: #17201955; }
+.settings-header, .settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-header h2 { margin: 0; font-size: 22px; }
+.settings-actions { justify-content: flex-end; padding-top: 20px; }
+.settings-panel fieldset { margin: 22px 0 0; padding: 14px 0 0; border: 0; border-top: 1px solid #d8d7cf; }
+.settings-panel legend { padding-right: 10px; font-size: 13px; font-weight: 600; }
+.settings-panel label { display: block; margin: 0 0 7px; font-size: 12px; }
+.settings-panel select, .settings-panel input[type="number"] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #cdd0c7;
+  border-radius: 7px;
+  color: inherit;
+  background: #fffefb;
+  font: inherit;
+  font-size: 13px;
+}
+.settings-panel p { color: #6f746c; font-size: 12px; line-height: 1.5; margin: 8px 0; }
+.settings-panel .settings-checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.settings-checkbox input { accent-color: #52765a; }
+.settings-panel input[type="range"] { width: 100%; accent-color: #52765a; }
+.font-size-preview { margin-top: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.filename-preview { display: block; padding: 10px; border-radius: 7px; background: #e7eee4; font-size: 11px; overflow-wrap: anywhere; }
+.settings-panel .settings-error, .spelling-menu .settings-error { color: #a33e35; }
+.settings-panel :is(select, input, button):focus-visible,
+.spelling-menu button:focus-visible { outline: 2px solid #6e9075; outline-offset: 2px; }
+
+.spelling-error { text-decoration: underline wavy #ae5145; text-underline-offset: 3px; }
+.spelling-menu { position: fixed; margin: 0; width: 230px; padding: 10px; }
+.spelling-menu::backdrop { background: transparent; }
+.spelling-menu strong { display: block; padding: 7px; overflow-wrap: anywhere; font-size: 13px; }
+.spelling-menu button { display: block; width: 100%; padding: 7px; border: 0; border-radius: 5px; text-align: left; background: transparent; color: inherit; cursor: pointer; }
+.spelling-menu button:hover { background: #e7eee4; }
+.spelling-menu p { padding: 0 7px; font-size: 12px; }
+
+[data-theme="dark"] :is(.settings-panel, .spelling-menu) { color: #e2e7df; background: var(--dark-surface); border-color: var(--dark-border); }
+[data-theme="dark"] .settings-panel fieldset { border-color: var(--dark-border); }
+[data-theme="dark"] .settings-panel :is(select, input[type="number"]) { color: #e2e7df; background: var(--dark-editor); border-color: var(--dark-border); }
+[data-theme="dark"] .settings-panel p { color: var(--dark-muted); }
+[data-theme="dark"] :is(.filename-preview, .spelling-menu button:hover) { background: #344335; }
+[data-theme="dark"] .spelling-error { text-decoration-color: #f0a69b; }
+[data-theme="dark"] :is(.settings-panel, .spelling-menu) .settings-error { color: #f0a69b; }

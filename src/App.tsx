@@ -1,8 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
+import { isolateHistory } from "@codemirror/commands";
 import { Crepe } from "@milkdown/crepe";
+import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
+import { closeHistory } from "@milkdown/kit/prose/history";
+import { suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
+import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
+import { SettingsPanel } from "./SettingsPanel";
+import { SpellingMenu } from "./SpellingMenu";
+import { loadDictionary } from "./spellingDictionaries";
+import type { SpellingChecker } from "./spellcheckCore";
+import { sourceSpelling, richSpelling, richSpellingKey, type SpellingOptions, type SpellingRequest } from "./spellingEditors";
 import {
   DEMO_BANNER,
   chooseWorkspaceFolder,
@@ -14,6 +24,7 @@ import {
   refreshWorkspace as backendRefreshWorkspace,
   renameDocument as backendRenameDocument,
   saveDocument as backendSaveDocument,
+  setNativeTheme,
 } from "./backend";
 import {
   CartesianGrid,
@@ -27,6 +38,8 @@ import {
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import "./App.css";
+import "./theme.css";
+import "./settings.css";
 import {
   AnalyticsView,
   DocumentResult,
@@ -37,6 +50,20 @@ import {
 
 function App() {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const richEditorRef = useRef<Crepe | null>(null);
+  const [loadedSettings] = useState(loadLocalSettings);
+  const [settings, setSettings] = useState(loadedSettings.settings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dictionary, setDictionary] = useState<{ language: string; checker: SpellingChecker | null }>({ language: "", checker: null });
+  const [spellingRequest, setSpellingRequest] = useState<SpellingRequest | null>(null);
+  const theme = settings.theme;
+  const spelling = useMemo<SpellingOptions>(() => ({
+    language: settings.spelling,
+    checker: dictionary.language === settings.spelling ? dictionary.checker : null,
+  }), [settings.spelling, dictionary]);
+  const sourceExtensions = useMemo(() => [
+    markdown(), EditorView.lineWrapping, sourceSpelling(spelling, setSpellingRequest),
+  ], [spelling]);
   const [page, setPage] = useState<"write" | "analytics">("write");
   const [workspace, setWorkspace] = useState<WorkspaceView | null>(null);
   const [document, setDocument] = useState<DocumentView | null>(null);
@@ -49,12 +76,110 @@ function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [richEditorVersion, setRichEditorVersion] = useState(0);
   const [creatingDocument, setCreatingDocument] = useState(false);
-  const [renamingDocument, setRenamingDocument] = useState(false);
   const [documentName, setDocumentName] = useState("");
+  const [newTitle, setNewTitle] = useState("");
   const [documentNameSuggested, setDocumentNameSuggested] = useState(false);
   const [documentModalError, setDocumentModalError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("Choose a folder to begin tracking your writing.");
+  const saving = useRef(false);
+  const [saveError, setSaveError] = useState("");
+  const draftRef = useRef({ document, content, tagInput, editorMode });
+  draftRef.current = { document, content, tagInput, editorMode };
+  const [status, setStatus] = useState(loadedSettings.error ?? "Choose a folder to begin tracking your writing.");
+  const title = useMemo(() => writingTitle(content), [content]);
+
+  useLayoutEffect(() => {
+    window.document.documentElement.dataset.theme = theme;
+    void setNativeTheme(theme).catch((error) => {
+      setStatus(`Could not update the window theme: ${String(error)}`);
+    });
+  }, [theme]);
+
+  useLayoutEffect(() => {
+    window.document.documentElement.style.setProperty("--editor-font-size", `${settings.editorFontSize}px`);
+  }, [settings.editorFontSize]);
+
+  useEffect(() => {
+    let active = true;
+    const language = settings.spelling;
+    setSpellingRequest(null);
+    if (language === "en-GB" || language === "en-US") {
+      void loadDictionary(language).then(checker => {
+        if (active) setDictionary({ language, checker });
+      }).catch(error => {
+        if (active) setStatus(`Spellcheck unavailable: ${String(error)}. Reopen Settings to retry.`);
+      });
+    } else {
+      setDictionary({ language, checker: null });
+    }
+    return () => { active = false; };
+  }, [settings.spelling]);
+
+  async function saveSettings(next: Settings) {
+    if (next.spelling === "en-GB" || next.spelling === "en-US") {
+      const checker = await loadDictionary(next.spelling);
+      setDictionary({ language: next.spelling, checker });
+    }
+
+    persistSettings(next);
+  }
+
+  function persistSettings(next: Settings) {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    setSettings(next);
+    setStatus("Settings saved on this device.");
+  }
+
+  function toggleTheme() {
+    try {
+      persistSettings({ ...settings, theme: theme === "light" ? "dark" : "light" });
+    } catch (error) {
+      setStatus(`Could not save the theme preference: ${String(error)}`);
+    }
+  }
+
+  function newFilename(title: string) {
+    return suggestedFilename(title, new Date(), settings.filename).replace(/\.md$/, "");
+  }
+
+  function currentContent() {
+    if (editorMode !== "rich" || !richEditorRef.current) return content;
+    return splitMarkdownDocument(content).frontMatter + richEditorRef.current.getMarkdown();
+  }
+
+  async function changeWritingTitle(nextTitle: string) {
+    if (editorMode === "rich") {
+      if (!richEditorRef.current) throw new Error("The editor is still loading. Try again.");
+      richEditorRef.current.editor.action(ctx => {
+        const view = ctx.get(editorViewCtx);
+        const heading = ctx.get(parserCtx)(withWritingTitle("", nextTitle))?.firstChild;
+        if (!heading) throw new Error("Could not create the writing title.");
+        let position: number | null = null;
+        view.state.doc.forEach((node, offset) => {
+          if (position === null && node.type === heading.type && node.attrs.level === 1) position = offset;
+        });
+        const transaction = view.state.tr;
+        if (position === null) {
+          transaction.insert(0, heading);
+        } else {
+          const existing = view.state.doc.nodeAt(position);
+          if (!existing) throw new Error("Could not locate the writing title.");
+          transaction.replaceWith(position + 1, position + existing.nodeSize - 1, heading.content);
+        }
+        view.dispatch(closeHistory(transaction));
+        view.dispatch(closeHistory(view.state.tr));
+      });
+    } else {
+      const view = editorRef.current?.view;
+      if (!view) throw new Error("The editor is still loading. Try again.");
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: withWritingTitle(view.state.doc.toString(), nextTitle) },
+        annotations: isolateHistory.of("full"),
+      });
+    }
+    setStatus(settings.autosave ? "Title updated. Autosave pending; the file name is unchanged."
+      : "Title updated. Save to write it to the document; the file name is unchanged.");
+  }
 
   const run = useCallback(async <T,>(operation: () => Promise<T>) => {
     setBusy(true);
@@ -101,41 +226,62 @@ function App() {
     setContent(next.content);
     setSavedContent(next.content);
     setTagInput(next.tags.join(", "));
+    setRichEditorVersion((version) => version + 1);
     setStatus(`${next.wordCount.toLocaleString()} words`);
   }
 
-  async function saveDocument() {
-    if (!document || (!contentChanged && !tagsChanged)) return;
-    const saved = await run(() => backendSaveDocument(document.path, content, parsedTags));
-    applyDocumentResult(saved, true);
-    setStatus("Saved and activity updated.");
+  async function saveDocument(automatic = false) {
+    if (!document || busy || saving.current) return;
+    const submitted = currentContent();
+    if (submitted === savedContent && !tagsChanged) return;
+    const submittedTags = tagInput;
+    const path = document.path;
+    saving.current = true;
+    setSaveError("");
+    try {
+      const saved = await run(() => backendSaveDocument(path, submitted, parsedTags));
+      const latest = draftRef.current;
+      if (latest.document?.path !== path) return;
+      const latestContent = latest.editorMode === "rich" && richEditorRef.current
+        ? splitMarkdownDocument(latest.content).frontMatter + richEditorRef.current.getMarkdown()
+        : latest.content;
+      // A save acknowledges its snapshot, never edits typed while it was running.
+      const unchanged = latestContent === submitted && latest.tagInput === submittedTags;
+      setWorkspace(saved.workspace);
+      setDocument(saved.document);
+      setAnalytics(null);
+      setSavedContent(unchanged ? saved.document.content : submitted);
+      if (unchanged) setContent(saved.document.content);
+      setStatus(automatic ? "Autosaved and activity updated." : "Saved and activity updated.");
+    } catch (error) {
+      setSaveError(`${automatic ? "Autosave" : "Save"} failed: ${String(error)}. Your changes are still in the editor. Press Save to retry.`);
+    } finally {
+      saving.current = false;
+    }
   }
 
   async function createDocument(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setDocumentModalError("");
     try {
-      const created = await run(() => backendCreateDocument(documentName));
+      const created = await run(() => backendCreateDocument(documentName, newTitle));
       applyDocumentResult(created);
       setCreatingDocument(false);
+      setPage("write");
       setStatus(`Created ${created.document.path}.`);
     } catch (error) {
       setDocumentModalError(String(error));
     }
   }
 
-  async function renameDocument(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!document) return;
-    setDocumentModalError("");
-    try {
-      const renamed = await run(() => backendRenameDocument(document.path, documentName));
-      applyDocumentResult(renamed);
-      setRenamingDocument(false);
-      setStatus(`Renamed to ${renamed.document.path}.`);
-    } catch (error) {
-      setDocumentModalError(String(error));
-    }
+  async function renameDocument(name: string) {
+    if (!document || busy) return;
+    const renamed = await run(() => backendRenameDocument(document.path, name));
+    setWorkspace(renamed.workspace);
+    setDocument(renamed.document);
+    setAnalytics(null);
+    // Renaming only changes the path. Keep unsaved editor text and tags intact.
+    setStatus(`Renamed to ${renamed.document.path}.`);
   }
 
   function applyDocumentResult(result: DocumentResult, preserveEditorMode = false) {
@@ -145,6 +291,7 @@ function App() {
     setSavedContent(result.document.content);
     setTagInput(result.document.tags.join(", "));
     setDocumentName("");
+    setNewTitle("");
     setDocumentModalError("");
     setAnalytics(null);
     if (!preserveEditorMode) {
@@ -186,20 +333,10 @@ function App() {
     setStatus("Showing the last 12 weeks of writing activity.");
   }
 
-  function openRenameDialog() {
-    if (!document || contentChanged || tagsChanged) return;
-    const pathParts = document.path.split("/");
-    const currentName = pathParts[pathParts.length - 1] ?? document.path;
-    setDocumentName(currentName.replace(/\.md$/i, ""));
-    setDocumentModalError("");
-    setDocumentNameSuggested(false);
-    setRenamingDocument(true);
-  }
-
   function closeDocumentModal() {
     setCreatingDocument(false);
-    setRenamingDocument(false);
     setDocumentName("");
+    setNewTitle("");
     setDocumentNameSuggested(false);
     setDocumentModalError("");
   }
@@ -231,6 +368,7 @@ function App() {
   }
 
   function changeEditorMode(mode: "rich" | "source") {
+    if (editorMode === "rich") setContent(currentContent());
     if (mode === "rich") {
       setRichEditorVersion((version) => version + 1);
     }
@@ -239,9 +377,10 @@ function App() {
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
+      if (event.defaultPrevented || settingsOpen || spellingRequest) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        void saveDocument();
+        if (!busy) void saveDocument();
       }
       if (event.key === "Escape" && focusMode) {
         setFocusMode(false);
@@ -265,16 +404,35 @@ function App() {
     normalizedTagInput.length !== normalizedSavedTags.length
     || normalizedTagInput.some((tag, index) => tag !== normalizedSavedTags[index]);
 
+  const saveRef = useRef(saveDocument);
+  saveRef.current = saveDocument;
+  useEffect(() => { setSaveError(""); }, [document?.path, settings.autosave]);
+  useEffect(() => {
+    if (!settings.autosave || !document || busy || saveError || settingsOpen || spellingRequest
+      || creatingDocument || page !== "write" || (!contentChanged && !tagsChanged)) return;
+    const timer = window.setTimeout(() => { void saveRef.current(true); }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [settings.autosave, document?.path, content, tagInput, contentChanged, tagsChanged,
+    busy, saveError, settingsOpen, spellingRequest, creatingDocument, page]);
+
+  useEffect(() => {
+    if (!contentChanged && !tagsChanged) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [contentChanged, tagsChanged]);
+
   const shellClasses = [
     "app-shell",
     focusMode ? "focus-mode" : "",
+    page === "analytics" || focusMode ? "compact-activity" : "",
     isDemoMode() && !focusMode ? "has-demo-banner" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
-    <main className={shellClasses}>
+    <main className={shellClasses} spellCheck={settings.spelling === "system"}>
       {isDemoMode() && !focusMode && (
         <div className="demo-banner" role="status">
           {DEMO_BANNER}
@@ -293,16 +451,10 @@ function App() {
             <button
               className={page === "write" ? "active" : ""}
               onClick={() => setPage("write")}
+              disabled={busy}
               aria-current={page === "write" ? "page" : undefined}
             >
               Write
-            </button>
-            <button
-              className="secondary-button focus-button"
-              onClick={() => setFocusMode((current) => !current)}
-              title="Press Escape to exit focus mode"
-            >
-              {focusMode ? "Exit focus" : "Focus"}
             </button>
             <button
               className={page === "analytics" ? "active" : ""}
@@ -315,6 +467,21 @@ function App() {
           </nav>
         )}
         <div className="topbar-actions">
+          <button className="icon-button theme-toggle" onClick={toggleTheme}
+            aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+            title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}>
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+              {theme === "light" ? <path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z" />
+                : <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></>}
+            </svg>
+          </button>
+          <button className="icon-button settings-toggle" onClick={() => setSettingsOpen(true)}
+            aria-label="Settings" title="Settings" aria-haspopup="dialog">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="m9 3 1-1h4l1 3 3 1 3-1 2 4-2 2v3l2 2-2 4-3-1-3 1-1 3h-4l-1-3-3-1-3 1-2-4 2-2v-3L1 9l2-4 3 1 3-1Z" transform="translate(1 1) scale(.9)" />
+            </svg>
+          </button>
           {workspace && (
             <>
               <button
@@ -323,7 +490,8 @@ function App() {
                   if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes and create a new document?")) {
                     return;
                   }
-                  setDocumentName(`${localDatePrefix()} Untitled`);
+                  setNewTitle("");
+                  setDocumentName(newFilename(""));
                   setDocumentNameSuggested(true);
                   setDocumentModalError("");
                   setCreatingDocument(true);
@@ -388,6 +556,7 @@ function App() {
                       className={document?.path === path ? "file-button active" : "file-button"}
                       key={path}
                       onClick={() => selectDocument(path)}
+                      disabled={busy}
                     >
                       <span className="file-icon">¶</span>
                       <span>{path}</span>
@@ -411,18 +580,31 @@ function App() {
             {document ? (
               <>
                 <div className="document-header">
-                  <div>
+                  <div className="document-heading">
                     <p className="eyebrow">Now writing</p>
-                    <h1>{document.path}</h1>
+                    <InlineNameEditor key={`title:${document.path}`} value={title}
+                      display={title || "Untitled"} label="Writing title" busy={busy}
+                      heading onRename={changeWritingTitle} />
+                    <div className="document-filename">
+                      <InlineNameEditor key={`file:${document.path}`}
+                        value={(document.path.split(/[/\\]/).pop() ?? document.path).replace(/\.md$/i, "")}
+                        display={document.path} label="File name" extension=".md"
+                        busy={busy} onRename={renameDocument} />
+                    </div>
                   </div>
                   <div className="document-actions">
                     <button
-                      className="secondary-button"
-                      onClick={openRenameDialog}
-                      disabled={busy || contentChanged || tagsChanged}
-                      title={contentChanged || tagsChanged ? "Save before renaming" : "Rename file"}
+                      className="icon-button focus-button"
+                      onClick={() => setFocusMode((current) => !current)}
+                      aria-label={focusMode ? "Exit focus mode" : "Enter focus mode"}
+                      aria-pressed={focusMode}
+                      title={focusMode ? "Exit focus mode (Escape)" : "Focus mode"}
                     >
-                      Rename
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d={focusMode
+                          ? "M4 9h5V4m6 0v5h5M4 15h5v5m6 0v-5h5"
+                          : "M9 4H4v5m11-5h5v5M4 15v5h5m6 0h5v-5"} />
+                      </svg>
                     </button>
                     <button
                       className="secondary-button"
@@ -434,10 +616,10 @@ function App() {
                     </button>
                     <button
                       className="primary-button"
-                      onClick={saveDocument}
+                      onClick={() => void saveDocument()}
                       disabled={busy || (!contentChanged && !tagsChanged)}
                     >
-                      {!contentChanged && !tagsChanged ? "Saved" : "Save"}
+                      {saving.current ? "Saving…" : !contentChanged && !tagsChanged ? "Saved" : "Save"}
                     </button>
                   </div>
                 </div>
@@ -470,8 +652,9 @@ function App() {
                     <CodeMirror
                       ref={editorRef}
                       value={content}
+                      theme={theme}
                       height="100%"
-                      extensions={[markdown(), EditorView.lineWrapping]}
+                      extensions={sourceExtensions}
                       onChange={setContent}
                       basicSetup={{
                         lineNumbers: false,
@@ -482,9 +665,13 @@ function App() {
                     />
                   ) : (
                     <RichMarkdownEditor
-                      key={`${document.path}:${richEditorVersion}`}
+                      key={richEditorVersion}
                       markdown={splitMarkdownDocument(content).body}
                       onChange={updateRichContent}
+                      editorRef={richEditorRef}
+                      onError={setStatus}
+                      spelling={spelling}
+                      onSpelling={setSpellingRequest}
                     />
                   )}
                 </div>
@@ -510,37 +697,45 @@ function App() {
       <footer className="statusbar">
         <span className={busy ? "status-dot busy" : "status-dot"} />
         <span>{busy ? "Working…" : status}</span>
+        {saveError && <span role="alert">{saveError}</span>}
         {document && (contentChanged || tagsChanged) && <span className="unsaved">Unsaved changes</span>}
       </footer>
 
-      {(creatingDocument || renamingDocument) && (
+      {settingsOpen && <SettingsPanel settings={settings} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
+      {spellingRequest && <SpellingMenu request={spellingRequest} onClose={() => setSpellingRequest(null)} />}
+
+      {creatingDocument && (
         <div className="modal-backdrop" role="presentation">
           <form
             className="new-document-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="document-modal-title"
-            onSubmit={renamingDocument ? renameDocument : createDocument}
+            onSubmit={createDocument}
           >
             <p className="eyebrow">
-              {renamingDocument ? "Rename Markdown file" : "New Markdown file"}
+              New Markdown file
             </p>
-            <h2 id="document-modal-title">{renamingDocument ? "Choose a new name" : "Name your document"}</h2>
+            <h2 id="document-modal-title">Name your document</h2>
             <p>
-              {renamingDocument
-                ? "The file stays in its current folder and keeps its writing history."
-                : `Wrava will create it as ${localDatePrefix()} Your title.md.`}
+              The title becomes the first heading. The file name is independent.
             </p>
+            <label htmlFor="writing-title">Writing title</label>
+            <input id="writing-title" className="title-input" autoFocus required
+              placeholder="Reflections on Discipline"
+              value={newTitle} onChange={(event) => {
+                const value = event.currentTarget.value;
+                setNewTitle(value);
+                if (documentNameSuggested) setDocumentName(newFilename(value));
+              }} />
             <label htmlFor="document-name">File name</label>
             <div className="file-name-input">
               <input
                 id="document-name"
-                autoFocus
+                required
+                spellCheck={false}
                 value={documentName}
                 className={documentNameSuggested ? "suggested-value" : ""}
-                onFocus={(event) => {
-                  if (documentNameSuggested) event.currentTarget.select();
-                }}
                 onChange={(event) => {
                   setDocumentName(event.currentTarget.value);
                   setDocumentNameSuggested(false);
@@ -548,6 +743,13 @@ function App() {
               />
               <span>.md</span>
             </div>
+            <p className="filename-help">
+              {documentNameSuggested ? `Suggested from your title, up to ${settings.filename.maxLength} characters${settings.filename.includeDate ? " including the date" : ""} and .md.` : "Custom file name. Changing the title will leave it unchanged."}
+            </p>
+            {!documentNameSuggested && <button type="button" className="text-button" onClick={() => {
+              setDocumentName(newFilename(newTitle));
+              setDocumentNameSuggested(true);
+            }}>Use suggested file name</button>}
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={closeDocumentModal}>
                 Cancel
@@ -555,9 +757,9 @@ function App() {
               <button
                 className="primary-button"
                 type="submit"
-                disabled={busy || !documentName.trim()}
+                disabled={busy || !documentName.trim() || !newTitle.trim()}
               >
-                {renamingDocument ? "Rename file" : "Create file"}
+                Create file
               </button>
             </div>
             {documentModalError && (
@@ -568,6 +770,91 @@ function App() {
       )}
     </main>
   );
+}
+
+function InlineNameEditor({ value, display, label, extension = "", heading = false, busy, onRename }: {
+  value: string;
+  display: string;
+  label: string;
+  extension?: string;
+  heading?: boolean;
+  busy: boolean;
+  onRename: (name: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(value);
+  const [error, setError] = useState("");
+  const titleRef = useRef<HTMLButtonElement>(null);
+  const submitting = useRef(false);
+
+  function cancel() {
+    setEditing(false);
+    setName(value);
+    setError("");
+    requestAnimationFrame(() => titleRef.current?.focus());
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || submitting.current || !name.trim()) return;
+    if ((extension ? name.trim().replace(/\.md$/i, "") : name.trim()) === value) {
+      cancel();
+      return;
+    }
+    submitting.current = true;
+    setError("");
+    try {
+      await onRename(name.trim());
+      cancel();
+    } catch (error) {
+      setError(String(error));
+    } finally {
+      submitting.current = false;
+    }
+  }
+
+  const button = (
+    <button ref={titleRef} className="document-title" disabled={busy} onClick={() => {
+      setName(value);
+      setEditing(true);
+    }} title={`${display} (click to edit ${label.toLowerCase()})`} aria-label={`Edit ${label.toLowerCase()}: ${display}`}>
+      {display}
+    </button>
+  );
+
+  return editing ? (
+    <form className="inline-rename" onSubmit={submit} onKeyDown={(event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!busy) cancel();
+      }
+    }}>
+      <div className="rename-controls">
+        <input
+          aria-label={label}
+          spellCheck={extension ? false : undefined}
+          aria-describedby={error ? `${extension ? "file" : "title"}-rename-error` : undefined}
+          aria-invalid={Boolean(error)}
+          autoFocus
+          required
+          disabled={busy}
+          value={name}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => setName(event.currentTarget.value)}
+        />
+        {extension && <span className="rename-extension">{extension}</span>}
+        <button className="icon-button" type="submit" aria-label={`Apply ${label.toLowerCase()}`} title={`Apply ${label.toLowerCase()}`} disabled={busy || !name.trim()}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+        </button>
+        <button className="icon-button" type="button" onClick={cancel} aria-label="Cancel rename" title="Cancel rename" disabled={busy}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
+        </button>
+      </div>
+      <p className="rename-hint">Enter to apply. Escape to cancel.</p>
+      {error && <p id={`${extension ? "file" : "title"}-rename-error`} className="rename-error" role="alert">{error}</p>}
+    </form>
+  ) : heading ? <h1>{button}</h1> : button;
 }
 
 function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
@@ -616,18 +903,18 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
           <div className="trend-chart">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={analytics.daily} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
-                <CartesianGrid stroke="#e5e7df" strokeDasharray="4 4" vertical={false} />
+                <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="4 4" vertical={false} />
                 <XAxis
                   dataKey="date"
                   tickFormatter={formatShortDate}
                   minTickGap={36}
-                  tick={{ fill: "#777c73", fontSize: 11 }}
+                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
                   yAxisId="words"
-                  tick={{ fill: "#777c73", fontSize: 11 }}
+                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
                 />
@@ -635,20 +922,20 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
                   yAxisId="documents"
                   orientation="right"
                   allowDecimals={false}
-                  tick={{ fill: "#777c73", fontSize: 11 }}
+                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <Tooltip
                   labelFormatter={(label) => formatDate(String(label))}
-                  contentStyle={{ borderRadius: 10, borderColor: "#d8dcd3" }}
+                  contentStyle={{ borderRadius: 10, borderColor: "var(--tooltip-border)", background: "var(--tooltip-background)", color: "var(--tooltip-text)" }}
                 />
                 <Line
                   type="monotone"
                   dataKey="wordsAdded"
                   name="Words added"
                   yAxisId="words"
-                  stroke="#315b3a"
+                  stroke="var(--chart-added)"
                   strokeWidth={2.5}
                   dot={false}
                   activeDot={{ r: 4 }}
@@ -658,7 +945,7 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
                   dataKey="netChange"
                   name="Net growth"
                   yAxisId="words"
-                  stroke="#9a7550"
+                  stroke="var(--chart-net)"
                   strokeWidth={2}
                   strokeDasharray="5 5"
                   dot={false}
@@ -668,7 +955,7 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
                   dataKey="activeDocuments"
                   name="Active documents"
                   yAxisId="documents"
-                  stroke="#65758b"
+                  stroke="var(--chart-documents)"
                   strokeWidth={1.5}
                   dot={false}
                 />
@@ -766,17 +1053,39 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
 function RichMarkdownEditor({
   markdown,
   onChange,
+  editorRef,
+  onError,
+  spelling,
+  onSpelling,
 }: {
   markdown: string;
   onChange: (markdown: string) => void;
+  editorRef: React.RefObject<Crepe | null>;
+  onError: (message: string) => void;
+  spelling: SpellingOptions;
+  onSpelling: (request: SpellingRequest) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const initialMarkdownRef = useRef(markdown);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const spellingRef = useRef(spelling);
+  spellingRef.current = spelling;
+  const onSpellingRef = useRef(onSpelling);
+  onSpellingRef.current = onSpelling;
+
+  useEffect(() => {
+    editorRef.current?.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      view.dispatch(view.state.tr.setMeta(richSpellingKey, "refresh"));
+    });
+  }, [editorRef, spelling]);
 
   useEffect(() => {
     if (!rootRef.current) return;
+    let disposed = false;
 
     const crepe = new Crepe({
       root: rootRef.current,
@@ -790,19 +1099,24 @@ function RichMarkdownEditor({
         [Crepe.Feature.TopBar]: true,
       },
     });
+    crepe.editor.use(richSpelling(() => spellingRef.current, request => onSpellingRef.current(request)));
     crepe.on((listener) => {
       listener.markdownUpdated((_context, nextMarkdown, previousMarkdown) => {
-        if (nextMarkdown !== previousMarkdown) {
+        if (!disposed && nextMarkdown !== previousMarkdown) {
           onChangeRef.current(nextMarkdown);
         }
       });
     });
 
-    void crepe.create();
+    void crepe.create().then(() => {
+      if (!disposed) editorRef.current = crepe;
+    }).catch((error) => onErrorRef.current(`Could not start the rich editor: ${String(error)}`));
     return () => {
-      void crepe.destroy();
+      disposed = true;
+      if (editorRef.current === crepe) editorRef.current = null;
+      void crepe.destroy().catch((error) => onErrorRef.current(`Could not close the rich editor: ${String(error)}`));
     };
-  }, []);
+  }, [editorRef]);
 
   return <div className="rich-editor" ref={rootRef} />;
 }
@@ -873,26 +1187,6 @@ function activityLevel(words: number) {
   if (words < 300) return 2;
   if (words < 600) return 3;
   return 4;
-}
-
-function localDatePrefix() {
-  const date = new Date();
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function splitMarkdownDocument(markdown: string) {
-  const match = markdown.match(/^(---(?:\r?\n))[\s\S]*?(\r?\n---\r?\n)/);
-  if (!match) {
-    return { frontMatter: "", body: markdown };
-  }
-  const boundary = match[0].length;
-  return {
-    frontMatter: markdown.slice(0, boundary),
-    body: markdown.slice(boundary),
-  };
 }
 
 export default App;

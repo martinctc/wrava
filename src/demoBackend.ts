@@ -13,6 +13,7 @@ import type {
   TagActivity,
   WorkspaceView,
 } from "./types";
+import { documentFilename, titleMarkdown } from "./documentIdentity";
 
 export const DEMO_WORKSPACE_ROOT = "Demo workspace (in your browser)";
 
@@ -227,14 +228,12 @@ class DemoStore {
     return { workspace: this.workspace(), document: this.read(path) };
   }
 
-  create(name: string): DocumentResult {
-    const trimmed = name.trim();
-    if (!trimmed) throw new Error("Enter a document name.");
-    const fileName = trimmed.toLowerCase().endsWith(".md") ? trimmed : `${trimmed}.md`;
-    if (this.documents.has(fileName)) {
+  create(name: string, title: string): DocumentResult {
+    const fileName = documentFilename(name);
+    if (this.files().some((path) => path.toLowerCase() === fileName.toLowerCase())) {
       throw new Error(`${fileName} already exists.`);
     }
-    const content = `# ${trimmed.replace(/\.md$/i, "")}\n\n`;
+    const content = `# ${titleMarkdown(title)}\n\n`;
     this.documents.set(fileName, { path: fileName, content });
     this.baselineWordCounts.set(fileName, 0);
     return { workspace: this.workspace(), document: this.read(fileName) };
@@ -243,10 +242,9 @@ class DemoStore {
   rename(path: string, name: string): DocumentResult {
     const doc = this.documents.get(path);
     if (!doc) throw new Error(`Document not found: ${path}`);
-    const trimmed = name.trim();
-    if (!trimmed) throw new Error("Enter a document name.");
-    const fileName = trimmed.toLowerCase().endsWith(".md") ? trimmed : `${trimmed}.md`;
-    if (fileName !== path && this.documents.has(fileName)) {
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+    const fileName = parent + documentFilename(name);
+    if (fileName !== path && this.files().some((existing) => existing.toLowerCase() === fileName.toLowerCase())) {
       throw new Error(`${fileName} already exists.`);
     }
     this.documents.delete(path);
@@ -328,8 +326,8 @@ export function demoSaveDocument(path: string, content: string, tags: string[]):
   return store.save(path, content, tags);
 }
 
-export function demoCreateDocument(name: string): DocumentResult {
-  return store.create(name);
+export function demoCreateDocument(name: string, title: string): DocumentResult {
+  return store.create(name, title);
 }
 
 export function demoRenameDocument(path: string, name: string): DocumentResult {
