@@ -191,33 +191,44 @@ fn save_document(
 }
 
 #[tauri::command]
-fn create_document(state: State<AppState>, name: String) -> Result<CreatedDocumentView, String> {
+fn create_document(
+    state: State<AppState>,
+    name: String,
+    title: String,
+) -> Result<CreatedDocumentView, String> {
     with_workspace(&state, |workspace| {
-        let title = date_prefixed_title(&name)?;
-        let path = document_name(&title)?;
-        let full_path = resolve_document_path(&workspace.root, &path)?;
-        let content = format!("# {title}\n\n");
+        create_workspace_document(workspace, &name, &title)
+    })
+}
 
-        AtomicFile::new(&full_path, DisallowOverwrite)
-            .write(|file| file.write_all(content.as_bytes()))
-            .map_err(|error| {
-                if full_path.exists() {
-                    format!("A document named \"{path}\" already exists.")
-                } else {
-                    display_error(error)
-                }
-            })?;
-        accept_file(workspace, &path, &content, "wrava")?;
+fn create_workspace_document(
+    workspace: &mut Workspace,
+    name: &str,
+    title: &str,
+) -> Result<CreatedDocumentView, String> {
+    let path = document_name(name)?;
+    let full_path = resolve_document_path(&workspace.root, &path)?;
+    let content = new_document_content(title)?;
 
-        Ok(CreatedDocumentView {
-            workspace: workspace_view(workspace)?,
-            document: DocumentView {
-                path,
-                word_count: prose_words(&content).len(),
-                tags: Vec::new(),
-                content,
-            },
-        })
+    AtomicFile::new(&full_path, DisallowOverwrite)
+        .write(|file| file.write_all(content.as_bytes()))
+        .map_err(|error| {
+            if full_path.exists() {
+                format!("A document named \"{path}\" already exists.")
+            } else {
+                display_error(error)
+            }
+        })?;
+    accept_file(workspace, &path, &content, "wrava")?;
+
+    Ok(CreatedDocumentView {
+        workspace: workspace_view(workspace)?,
+        document: DocumentView {
+            path,
+            word_count: prose_words(&content).len(),
+            tags: Vec::new(),
+            content,
+        },
     })
 }
 
@@ -696,11 +707,12 @@ fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, String>
 
 fn document_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
-    let without_extension = trimmed
-        .strip_suffix(".md")
-        .or_else(|| trimmed.strip_suffix(".MD"))
-        .unwrap_or(trimmed)
-        .trim();
+    let without_extension = if trimmed.to_ascii_lowercase().ends_with(".md") {
+        &trimmed[..trimmed.len() - 3]
+    } else {
+        trimmed
+    }
+    .trim();
 
     if without_extension.is_empty() {
         return Err("Enter a name for the new document.".into());
@@ -709,10 +721,11 @@ fn document_name(name: &str) -> Result<String, String> {
         || without_extension.ends_with('.')
         || without_extension.ends_with(' ')
         || without_extension.chars().any(|character| {
-            matches!(
-                character,
-                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-            )
+            character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
         })
     {
         return Err("Use a file name without slashes or Windows-reserved characters.".into());
@@ -722,31 +735,38 @@ fn document_name(name: &str) -> Result<String, String> {
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
-    if reserved
-        .iter()
-        .any(|reserved_name| without_extension.eq_ignore_ascii_case(reserved_name))
-    {
+    if reserved.iter().any(|reserved_name| {
+        without_extension
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case(reserved_name)
+    }) {
         return Err("That name is reserved by Windows. Choose another name.".into());
     }
 
+    if without_extension.encode_utf16().count() + 3 > 255 {
+        return Err("Use a file name of at most 255 characters including .md.".into());
+    }
     Ok(format!("{without_extension}.md"))
 }
 
-fn date_prefixed_title(name: &str) -> Result<String, String> {
-    let validated = document_name(name)?;
-    let title = validated.trim_end_matches(".md");
-    if has_date_prefix(title) {
-        Ok(title.to_string())
-    } else {
-        Ok(format!("{} {title}", Local::now().format("%Y-%m-%d")))
+fn new_document_content(title: &str) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() || title.contains(['\r', '\n']) {
+        return Err("Enter a title on a single line.".into());
     }
-}
-
-fn has_date_prefix(value: &str) -> bool {
-    value.len() >= 10
-        && value.as_bytes()[4] == b'-'
-        && value.as_bytes()[7] == b'-'
-        && NaiveDate::parse_from_str(&value[..10], "%Y-%m-%d").is_ok()
+    let mut escaped = String::new();
+    for character in title.chars() {
+        if matches!(
+            character,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '~'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    Ok(format!("# {escaped}\n\n"))
 }
 
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
@@ -973,18 +993,61 @@ mod tests {
         assert_eq!(document_name("Notes.md").unwrap(), "Notes.md");
         assert!(document_name("../outside").is_err());
         assert!(document_name("CON").is_err());
+        assert!(document_name("CON.notes.md").is_err());
+        assert!(document_name("line\nbreak").is_err());
+        assert!(document_name(&"a".repeat(253)).is_err());
+        assert_eq!(document_name("Mixed.mD").unwrap(), "Mixed.md");
         assert!(document_name(" ").is_err());
     }
 
     #[test]
-    fn prefixes_new_titles_once() {
-        let title = date_prefixed_title("Morning pages").expect("dated title");
-        assert!(has_date_prefix(&title));
-        assert!(title.ends_with(" Morning pages"));
+    fn keeps_writing_titles_independent_from_file_names() {
         assert_eq!(
-            date_prefixed_title("2026-09-16 Existing date").unwrap(),
-            "2026-09-16 Existing date"
+            document_name("2026-09-18_reflections-on-discipline").unwrap(),
+            "2026-09-18_reflections-on-discipline.md"
         );
+        assert_eq!(
+            new_document_content("Reflections on Discipline").unwrap(),
+            "# Reflections on Discipline\n\n"
+        );
+        assert_eq!(
+            new_document_content("Why: now?").unwrap(),
+            "# Why: now?\n\n"
+        );
+        assert_eq!(
+            new_document_content("A *literal* title #").unwrap(),
+            "# A \\*literal\\* title \\#\n\n"
+        );
+        assert!(new_document_content(" ").is_err());
+        assert!(new_document_content("First\nSecond").is_err());
+    }
+
+    #[test]
+    fn creates_independent_title_and_file_without_overwriting_existing_work() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let database = Connection::open_in_memory().expect("in-memory database");
+        initialize_database(&database).expect("database schema");
+        let mut workspace = Workspace {
+            root: fs::canonicalize(directory.path()).unwrap(),
+            database,
+        };
+        let file_name = "2026-09-18_reflections-on-discipline.md";
+        let created =
+            create_workspace_document(&mut workspace, file_name, "Reflections on Discipline")
+                .unwrap();
+        assert_eq!(created.document.path, file_name);
+        assert_eq!(created.document.content, "# Reflections on Discipline\n\n");
+        assert_eq!(
+            fs::read_to_string(workspace.root.join(file_name)).unwrap(),
+            created.document.content
+        );
+        assert!(create_workspace_document(&mut workspace, file_name, "Do not overwrite").is_err());
+        assert_eq!(
+            fs::read_to_string(workspace.root.join(file_name)).unwrap(),
+            created.document.content
+        );
+        assert!(create_workspace_document(&mut workspace, "invalid-title.md", "\n ").is_err());
+        assert!(!workspace.root.join("invalid-title.md").exists());
     }
 
     #[test]

@@ -4,6 +4,7 @@
 // inside a Tauri webview.
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AnalyticsView, DocumentResult, DocumentView, WorkspaceView } from "./types";
 import {
   DEMO_BANNER,
@@ -21,6 +22,10 @@ export { DEMO_BANNER };
 
 export function isDemoMode(): boolean {
   return !("__TAURI_INTERNALS__" in window);
+}
+
+export async function setNativeTheme(theme: "light" | "dark"): Promise<void> {
+  if (!isDemoMode()) await getCurrentWindow().setTheme(theme);
 }
 
 export async function chooseWorkspaceFolder(): Promise<string | null> {
@@ -55,9 +60,9 @@ export async function saveDocument(
   return invoke<DocumentResult>("save_document", { path, content, tags });
 }
 
-export async function createDocument(name: string): Promise<DocumentResult> {
-  if (isDemoMode()) return demoCreateDocument(name);
-  return invoke<DocumentResult>("create_document", { name });
+export async function createDocument(name: string, title: string): Promise<DocumentResult> {
+  if (isDemoMode()) return demoCreateDocument(name, title);
+  return invoke<DocumentResult>("create_document", { name, title });
 }
 
 export async function renameDocument(path: string, name: string): Promise<DocumentResult> {
