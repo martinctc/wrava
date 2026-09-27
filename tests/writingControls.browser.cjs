@@ -17,7 +17,7 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
         "second.md": { path: "second.md", content: "# Second\n\nOther writing.\n", tags: [], wordCount: 3 },
       };
       const workspace = { root: "C:\\Writing", files: Object.keys(docs), stats };
-      window.testStorage = { docs, calls: [], delay: 0, fail: false, active: 0, maxActive: 0 };
+      window.testStorage = { docs, workspace, calls: [], delay: 0, fail: false, active: 0, maxActive: 0 };
       window.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
         invoke: async (command, args) => {
@@ -61,9 +61,25 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
       assert.equal(await page.getByLabel("Autosave", { exact: true }).isChecked(), true);
       assert.equal(await page.getByLabel("Colour theme").inputValue(), "dark");
       await page.getByRole("slider").fill("24");
+      await page.getByLabel("Daily goal").fill("400");
+      await page.getByLabel("Weekly goal").fill("2000");
     });
     await button("Choose writing folder").first().click();
-    await page.locator(".file-button").first().click();
+    assert.equal(await page.getByRole("progressbar", { name: "Today goal progress" }).getAttribute("aria-valuemax"), "400");
+    await page.evaluate(() => {
+      window.testStorage.workspace.stats.todayNet = -20;
+      window.testStorage.workspace.stats.weekNet = 1000;
+    });
+    await button("Refresh").click();
+    assert.equal(await page.getByRole("progressbar", { name: "Today goal progress" }).getAttribute("aria-valuenow"), "0");
+    assert.equal(await page.getByRole("progressbar", { name: "This week goal progress" }).getAttribute("aria-valuenow"), "1000");
+    assert.match(await page.locator(".metric-card").first().innerText(), /-20 net words/);
+    assert.match(await page.locator(".metric-card").nth(1).innerText(), /per day needed/);
+    assert.equal(await page.locator(".more-activity").getAttribute("open"), null);
+    assert.match(await page.locator(".file-button").first().innerText(), /second\.md/);
+    await button("Sort documents oldest first").click();
+    assert.match(await page.locator(".file-button").first().innerText(), /first\.md/);
+    await page.locator(".file-button").filter({ hasText: "first.md" }).click();
     const rich = page.locator(".ProseMirror");
     await rich.waitFor();
     assert.equal(await rich.evaluate(el => getComputedStyle(el).fontSize), "24px");
@@ -191,7 +207,7 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     await source.click();
     await page.keyboard.press("Control+End");
     await page.keyboard.insertText(" discard pending edit");
-    await page.locator(".file-button").nth(1).click();
+    await page.locator(".file-button").filter({ hasText: "second.md" }).click();
     await page.waitForTimeout(2600);
     assert.equal(await count(), switchCount, "Switching documents cancels the old document's timer");
     assert.doesNotMatch(await page.evaluate(() => window.testStorage.docs["first.md"].content), /discard pending/);
@@ -206,6 +222,8 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     await page.reload({ waitUntil: "networkidle" });
     await button("Settings").click();
     assert.equal(await page.getByLabel("Autosave", { exact: true }).isChecked(), false);
+    assert.equal(await page.getByLabel("Daily goal").inputValue(), "400");
+    assert.equal(await page.getByLabel("Weekly goal").inputValue(), "2000");
     assert.equal(await page.getByRole("slider").inputValue(), "28");
     assert.equal(await page.getByLabel("Colour theme").inputValue(), "light");
     await page.setViewportSize({ width: 760, height: 640 });
@@ -216,7 +234,7 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     assert.equal(await button("Save settings").isVisible(), true);
     await button("Save settings").click();
     await button("Choose writing folder").first().click();
-    await page.locator(".file-button").first().click();
+    await page.locator(".file-button").filter({ hasText: "first.md" }).click();
     await settings(async () => { await page.getByRole("slider").fill("12"); });
     assert.equal(await rich.evaluate(el => getComputedStyle(el).fontSize), "12px");
     if (process.env.WRAVA_SCREENSHOT_DIR) {
@@ -228,6 +246,14 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     demo.on("pageerror", error => errors.push(error.message));
     await demo.goto(url, { waitUntil: "networkidle" });
     await demo.getByRole("button", { name: "Choose writing folder", exact: true }).first().click();
+    assert.match(await demo.locator(".file-button").first().innerText(), /2026-09-16 Book notes/);
+    await demo.getByRole("button", { name: "Settings", exact: true }).click();
+    await demo.getByLabel("Monthly goal").fill("2000");
+    await demo.getByLabel("Default document order").selectOption("oldest");
+    await demo.getByRole("button", { name: "Save settings", exact: true }).click();
+    assert.match(await demo.locator(".file-button").first().innerText(), /2026-09-10 Morning pages/);
+    await demo.locator(".more-activity summary").click();
+    assert.equal(await demo.getByRole("progressbar", { name: "This month goal progress" }).getAttribute("aria-valuemax"), "2000");
     await demo.locator(".file-button").first().click();
     await demo.getByRole("button", { name: "Markdown source", exact: true }).click();
     await demo.locator(".cm-content").click();
@@ -239,7 +265,7 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     await demo.locator(".file-button").first().click();
     assert.match(await demo.locator(".cm-content").innerText(), /Autosave in the browser demo/);
     assert.deepEqual(errors, []);
-    console.log("PASS: theme shortcut, sizing, debounce, save snapshots, concurrent edits, undo/cursor, failures, opt-out and persistence");
+    console.log("PASS: writing controls, goals, dashboard hierarchy, document ordering and persistence");
   } finally {
     await browser.close();
   }

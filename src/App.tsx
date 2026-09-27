@@ -8,6 +8,7 @@ import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
+import { goalProgress, sortDocuments, weekPace } from "./writingProgress";
 import { SettingsPanel } from "./SettingsPanel";
 import { SpellingMenu } from "./SpellingMenu";
 import { loadDictionary } from "./spellingDictionaries";
@@ -72,6 +73,7 @@ function App() {
   const [savedContent, setSavedContent] = useState("");
   const [tagInput, setTagInput] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
+  const [documentOrder, setDocumentOrder] = useState<Settings["documentOrder"] | null>(null);
   const [editorMode, setEditorMode] = useState<"rich" | "source">("rich");
   const [focusMode, setFocusMode] = useState(false);
   const [richEditorVersion, setRichEditorVersion] = useState(0);
@@ -122,6 +124,7 @@ function App() {
     }
 
     persistSettings(next);
+    setDocumentOrder(null);
   }
 
   function persistSettings(next: Settings) {
@@ -391,6 +394,11 @@ function App() {
   });
 
   const stats = workspace?.stats ?? emptyStats;
+  const orderedFiles = useMemo(
+    () => sortDocuments(workspace?.files ?? [], documentOrder ?? settings.documentOrder),
+    [workspace?.files, documentOrder, settings.documentOrder],
+  );
+  const weeklyPace = weekPace(stats, new Date());
   const parsedTags = tagInput
     .split(",")
     .map((tag) => tag.trim())
@@ -513,10 +521,25 @@ function App() {
 
       {page === "write" && !focusMode ? (
         <section className="metric-strip" aria-label="Writing activity">
-          <MetricCard label="Added today" value={stats.todayAdded} net={stats.todayNet} documents={stats.todayDocuments} />
-          <MetricCard label="Added this week" value={stats.weekAdded} net={stats.weekNet} documents={stats.weekDocuments} />
-          <MetricCard label="Added this month" value={stats.monthAdded} net={stats.monthNet} documents={stats.monthDocuments} />
-          <MetricCard label="Added this year" value={stats.yearAdded} net={stats.yearNet} documents={stats.yearDocuments} />
+          <div className="metric-primary">
+            <MetricCard label="Today" added={stats.todayAdded} net={stats.todayNet}
+              documents={stats.todayDocuments} goal={settings.goals.today} />
+            <MetricCard label="This week" added={stats.weekAdded} net={stats.weekNet}
+              documents={stats.weekDocuments} goal={settings.goals.week}
+              pace={`${weeklyPace.average.toLocaleString()} net words per calendar day on average`}
+              catchup={settings.goals.week > 0 && stats.weekNet < settings.goals.week
+                ? `${Math.ceil((settings.goals.week - stats.weekNet) / weeklyPace.needed).toLocaleString()} per day needed, including today`
+                : undefined} />
+          </div>
+          <details className="more-activity">
+            <summary>Month and year <span>See longer-term activity</span></summary>
+            <div className="metric-secondary">
+              <MetricCard label="This month" added={stats.monthAdded} net={stats.monthNet}
+                documents={stats.monthDocuments} goal={settings.goals.month} />
+              <MetricCard label="This year" added={stats.yearAdded} net={stats.yearNet}
+                documents={stats.yearDocuments} goal={settings.goals.year} />
+            </div>
+          </details>
         </section>
       ) : (
         <div className="metric-strip-compact" aria-label="Writing activity summary">
@@ -535,7 +558,20 @@ function App() {
           {!focusMode && <aside className="sidebar">
             <div className="sidebar-heading">
               <span>Documents</span>
-              <span className="file-count">{workspace?.files.length ?? 0}</span>
+              <div className="sidebar-heading-actions">
+                {workspace && <button type="button" className="document-sort"
+                  onClick={() => setDocumentOrder(
+                    (documentOrder ?? settings.documentOrder) === "newest" ? "oldest" : "newest",
+                  )}
+                  aria-label={(documentOrder ?? settings.documentOrder) === "newest"
+                    ? "Sort documents oldest first" : "Sort documents newest first"}
+                  title={(documentOrder ?? settings.documentOrder) === "newest"
+                    ? "Newest filename date first. Click for oldest first."
+                    : "Oldest filename date first. Click for newest first."}>
+                  {(documentOrder ?? settings.documentOrder) === "newest" ? "↓" : "↑"}
+                </button>}
+                <span className="file-count">{workspace?.files.length ?? 0}</span>
+              </div>
             </div>
             {workspace ? (
               <>
@@ -549,7 +585,7 @@ function App() {
                   />
                 </label>
                 <nav className="file-list" aria-label="Markdown documents">
-                  {workspace.files
+                  {orderedFiles
                     .filter((path) => path.toLowerCase().includes(documentSearch.toLowerCase().trim()))
                     .map((path) => (
                     <button
@@ -1123,22 +1159,37 @@ function RichMarkdownEditor({
 
 function MetricCard({
   label,
-  value,
+  added,
   net,
   documents,
+  goal,
+  pace,
+  catchup,
 }: {
   label: string;
-  value: number;
+  added: number;
   net: number;
   documents: number;
+  goal: number;
+  pace?: string;
+  catchup?: string;
 }) {
+  const progress = goalProgress(net, goal);
   return (
     <article className="metric-card">
       <span>{label}</span>
-      <strong>{value.toLocaleString()}</strong>
-      <small className={net < 0 ? "negative" : ""}>
-        {net >= 0 ? "+" : ""}{net.toLocaleString()} document growth
-      </small>
+      <strong className={net < 0 ? "negative" : ""}>{net >= 0 ? "+" : ""}{net.toLocaleString()} <em>net words</em></strong>
+      {goal > 0 && <>
+        <div className="goal-track" role="progressbar" aria-label={`${label} goal progress`}
+          aria-valuemin={0} aria-valuemax={goal} aria-valuenow={Math.min(goal, Math.max(0, net))}>
+          <span style={{ width: `${progress}%` }} />
+        </div>
+        <small className="goal-caption">{net >= goal ? "Goal reached" : `${Math.max(0, goal - net).toLocaleString()} to go`}
+          {" · "}{goal.toLocaleString()} net words target</small>
+      </>}
+      {pace && <small className="pace-caption">{pace}</small>}
+      {catchup && <small className="pace-caption">{catchup}</small>}
+      <small>{added.toLocaleString()} added</small>
       <small className="document-count">
         {documents} active document{documents === 1 ? "" : "s"}
       </small>

@@ -70,7 +70,8 @@
   .file-name-input span, .analytics-heading > div > p:last-child, .summary-card > span,
   .summary-card small, .card-heading p, .chart-legend, .consistency-note,
   .document-row-label span, .empty-analytics, .tag-row > span:last-child,
-  .document-filename, .text-button
+  .document-filename, .text-button, .metric-card strong em, .metric-card .pace-caption,
+  .more-activity summary span
 ) {
   color: var(--dark-muted);
 }
@@ -86,6 +87,14 @@
 [data-theme="dark"] :is(.page-tabs button.active, .document-title:hover, .metric-card small, .document-net, .document-row-label .document-tags, .rich-editor .ProseMirror a, .markdown-preview a) {
   color: var(--dark-accent);
 }
+
+[data-theme="dark"] :is(.more-activity summary, .document-sort, .metric-card .goal-caption) {
+  color: var(--dark-accent);
+}
+
+[data-theme="dark"] .goal-track { background: var(--dark-border); }
+[data-theme="dark"] .goal-track span { background: var(--dark-accent); }
+[data-theme="dark"] .document-sort:hover { background: #344335; }
 
 [data-theme="dark"] :is(.file-button:hover, .formatting-bar button:hover, .icon-button:hover, .icon-button[aria-pressed="true"], .file-button.active, .file-count, .card-heading > span, .tag-pill) {
   color: var(--dark-accent);
@@ -113,7 +122,7 @@
   background: linear-gradient(90deg, #527459, #a1c99b);
 }
 
-[data-theme="dark"] :is(.metric-strip-compact .negative, .metric-card small.negative, .document-net.negative, .rename-error, .new-document-modal .modal-error) {
+[data-theme="dark"] :is(.metric-strip-compact .negative, .metric-card small.negative, .metric-card strong.negative, .document-net.negative, .rename-error, .new-document-modal .modal-error) {
   color: #f0a69b;
 }
 

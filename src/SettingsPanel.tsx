@@ -10,6 +10,10 @@ export function SettingsPanel({ settings, onSave, onClose }: {
   const dialog = useRef<HTMLDialogElement>(null);
   const [draft, setDraft] = useState(settings);
   const [length, setLength] = useState(String(settings.filename.maxLength));
+  const [goals, setGoals] = useState({
+    today: String(settings.goals.today), week: String(settings.goals.week),
+    month: String(settings.goals.month), year: String(settings.goals.year),
+  });
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => { dialog.current?.showModal(); }, []);
@@ -28,7 +32,13 @@ export function SettingsPanel({ settings, onSave, onClose }: {
     setError("");
     setSaving(true);
     try {
-      await onSave(validateSettings({ ...draft, filename: { ...draft.filename, maxLength: limit } }));
+      await onSave(validateSettings({
+        ...draft,
+        filename: { ...draft.filename, maxLength: limit },
+        goals: Object.fromEntries(
+          (["today", "week", "month", "year"] as const).map((period) => [period, goals[period] === "" ? 0 : Number(goals[period])]),
+        ),
+      }));
       close();
     } catch (error) {
       setError(String(error));
@@ -73,6 +83,19 @@ export function SettingsPanel({ settings, onSave, onClose }: {
           <p>Applies to both editors. The rest of the interface stays the same size.</p>
         </fieldset>
         <fieldset disabled={saving}>
+          <legend>Writing goals</legend>
+          <p>Track net word growth (words added minus words deleted) in each calendar period. Set 0 to turn a goal off.</p>
+          <div className="goal-settings-grid">
+            {(["today", "week", "month", "year"] as const).map((period) => (
+              <label key={period} htmlFor={`goal-${period}`}>
+                {period === "today" ? "Daily" : period === "week" ? "Weekly" : period === "month" ? "Monthly" : "Yearly"} goal
+                <input id={`goal-${period}`} type="number" min={0} max={10000000} step={1}
+                  value={goals[period]} onChange={(event) => setGoals({ ...goals, [period]: event.currentTarget.value })} />
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset disabled={saving}>
           <legend>Spellcheck</legend>
           <label htmlFor="setting-spelling">Spelling language</label>
           <select id="setting-spelling" value={draft.spelling} onChange={(event) =>
@@ -101,6 +124,16 @@ export function SettingsPanel({ settings, onSave, onClose }: {
             value={length} onChange={(event) => setLength(event.currentTarget.value)} />
           <p>20–120 characters, including the date and .md. These preferences affect suggestions for new files only. Existing files and custom names stay unchanged.</p>
           <output className="filename-preview" aria-label="Example filename">{preview}</output>
+        </fieldset>
+        <fieldset disabled={saving}>
+          <legend>Documents</legend>
+          <label htmlFor="setting-document-order">Default document order</label>
+          <select id="setting-document-order" value={draft.documentOrder} onChange={(event) =>
+            setDraft(validateSettings({ ...draft, documentOrder: event.currentTarget.value }))}>
+            <option value="newest">Newest filename date first</option>
+            <option value="oldest">Oldest filename date first</option>
+          </select>
+          <p>Dates at the start of filenames determine order. Undated documents come afterwards; the sidebar control can reverse the order.</p>
         </fieldset>
         {error && <p className="settings-error" role="alert">{error}</p>}
         <footer className="settings-actions">

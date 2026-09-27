@@ -57,6 +57,13 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - Reconcile changes made in other editors.
 - Record words added, words deleted, and net document growth in SQLite.
 - Show activity for today, this week, this month, and this year.
+- Set optional daily, weekly, monthly and yearly net-word-growth goals in
+  Settings (0 disables a goal). The Write view shows progress for today and
+  this week, including average net words per calendar day and the daily pace
+  needed to reach a weekly goal. Expand Month and year for longer-term totals.
+  Negative net totals remain visible, while progress starts at zero.
+- List dated documents newest first by default, with a sidebar control to
+  reverse the filename-date order. Undated documents follow dated ones.
 - Show the number of active documents alongside word activity.
 - Explore a 12-week activity trend, consistency heatmap, and per-document
   and per-tag breakdowns on the detailed analytics page.

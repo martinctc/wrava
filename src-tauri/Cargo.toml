@@ -1,6 +1,6 @@
 [package]
 name = "wrava"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local-first writing editor and activity tracker"
 authors = ["Wrava contributors"]
 edition = "2021"

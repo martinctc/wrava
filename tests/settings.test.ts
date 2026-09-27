@@ -19,7 +19,7 @@ test("round-trips settings without letting legacy theme override them", () => {
 test("older settings gain autosave and editor size without losing preferences", () => {
   const legacy = { theme: "dark", spelling: "en-GB", filename: { includeDate: false, maxLength: 40 } };
   assert.deepEqual(loadSettings(storage({ [SETTINGS_KEY]: JSON.stringify(legacy) })).settings,
-    { ...legacy, autosave: true, editorFontSize: 16 });
+    { ...legacy, autosave: true, editorFontSize: 16, goals: defaultSettings.goals, documentOrder: "newest" });
   for (const editorFontSize of [11, 29, 16.5, "16", null]) {
     assert.throws(() => validateSettings({ ...defaultSettings, editorFontSize }));
   }
@@ -35,6 +35,12 @@ test("invalid or inaccessible settings report errors explicitly", () => {
   for (const maxLength of [19, 121, 30.5, "80", NaN]) {
     assert.throws(() => validateSettings({ ...defaultSettings, filename: { includeDate: true, maxLength } }));
   }
+  for (const goals of [null, [], { today: -1, week: 0, month: 0, year: 0 },
+    { today: 0, week: "200", month: 0, year: 0 }, { today: 0, week: 0, month: 0, year: Infinity },
+    { today: 0, week: 0, month: 0, year: 10_000_001 }]) {
+    assert.throws(() => validateSettings({ ...defaultSettings, goals }));
+  }
+  assert.throws(() => validateSettings({ ...defaultSettings, documentOrder: "modified" }));
   assert.match(loadSettings(storage({ [SETTINGS_KEY]: "not json" })).error ?? "", /Could not load/);
   assert.match(loadSettings({ getItem() { throw new Error("blocked"); } }).error ?? "", /blocked/);
 });
