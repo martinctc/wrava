@@ -842,6 +842,10 @@ button:disabled {
   line-height: 1.65;
 }
 
+.welcome-panel .restore-fallback {
+  margin-top: 14px;
+}
+
 .statusbar {
   display: flex;
   align-items: center;

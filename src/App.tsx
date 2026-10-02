@@ -8,7 +8,7 @@ import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
-import { forgetWorkspacePath, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
+import { forgetWorkspacePath, isMissingFolderError, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
 import { goalProgress, sortDocuments, weekPace } from "./writingProgress";
 import { SettingsPanel } from "./SettingsPanel";
 import { SpellingMenu } from "./SpellingMenu";
@@ -85,6 +85,9 @@ function App() {
   const [documentModalError, setDocumentModalError] = useState("");
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
+  // Set when the remembered folder failed to open but was kept because the
+  // failure looked temporary, so the welcome panel can offer a way out.
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const saving = useRef(false);
   const [saveError, setSaveError] = useState("");
   const draftRef = useRef({ document, content, tagInput, editorMode });
@@ -214,14 +217,16 @@ function App() {
     setRestoring(path);
     try {
       const next = await run(() => openWorkspace(path));
+      let rememberFailure = "";
       if (!isDemoMode()) {
         try {
           saveWorkspacePath(localStorage, path);
         } catch (error) {
-          setStatus(`Could not remember this folder for next time: ${String(error)}`);
+          rememberFailure = ` Could not remember this folder for next time: ${String(error)}`;
         }
       }
       setWorkspace(next);
+      setRestoreFailed(false);
       setDocument(null);
       setAnalytics(null);
       setContent("");
@@ -231,9 +236,9 @@ function App() {
       setFocusMode(false);
       setPage("write");
       setStatus(
-        next.files.length
+        (next.files.length
           ? `Tracking ${next.files.length} Markdown file${next.files.length === 1 ? "" : "s"}.`
-          : "Workspace ready. Create your first Markdown file.",
+          : "Workspace ready. Create your first Markdown file.") + rememberFailure,
       );
     } finally {
       setRestoring(null);
@@ -255,6 +260,7 @@ function App() {
     setTagInput("");
     setDocumentSearch("");
     setFocusMode(false);
+    setRestoreFailed(false);
     setPage("write");
     setStatus("Forgot this folder. Choose a folder to begin tracking your writing.");
   }
@@ -279,16 +285,24 @@ function App() {
         if (!active) return;
         setWorkspace(next);
         setStatus(`Reopened ${next.root}.`);
-      } catch {
+      } catch (error) {
         if (!active) return;
-        // The folder may have been moved, renamed or deleted. Forget it so the
-        // next launch does not retry, and fall back to the folder prompt.
-        try {
-          forgetWorkspacePath(localStorage);
-        } catch {
-          // Storage is unavailable; the prompt still works.
+        if (isMissingFolderError(error)) {
+          // The folder itself is gone. Forget it so the next launch does not
+          // retry, and fall back to the folder prompt.
+          try {
+            forgetWorkspacePath(localStorage);
+          } catch {
+            // Storage is unavailable; the prompt still works.
+          }
+          setStatus("Your last folder is no longer available. Choose a folder to continue.");
+        } else {
+          // Anything else may be temporary — an offline network drive, a sync
+          // tool holding a lock, a database conflict. Keep the path so the next
+          // launch retries, and offer an explicit way out instead.
+          setRestoreFailed(true);
+          setStatus("Could not reopen your last folder right now. It will be tried again on the next launch.");
         }
-        setStatus("Your last folder could not be opened. Choose a folder to continue.");
       } finally {
         if (active) setRestoring(null);
       }
@@ -822,6 +836,18 @@ function App() {
                     <button className="primary-button" onClick={chooseWorkspace} disabled={busy}>
                       Choose writing folder
                     </button>
+                    {restoreFailed && (
+                      <div>
+                        <button
+                          type="button"
+                          className="text-button restore-fallback"
+                          onClick={forgetWorkspace}
+                          disabled={busy}
+                        >
+                          Stop reopening the last folder
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
