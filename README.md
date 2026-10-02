@@ -17,6 +17,10 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 ## Current vertical slice
 
 - Select and index a folder of Markdown files.
+- Reopen the last used folder on launch instead of being asked to pick it every
+  time. Only the folder path is remembered, on this device, and never in the
+  browser demo. A Forget control beside the folder path stops reopening it, and
+  a missing folder falls back to the folder prompt.
 - Give your writing its own title, stored as the first Markdown H1.
   New files suggest `yyyy-mm-dd_title-slug.md`, capped at 80 characters by default, including
   the date and extension. You can override this before creating the file.

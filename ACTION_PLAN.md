@@ -17,8 +17,14 @@ speed, demo behaviour, or existing activity history.
 - On mount: read the remembered path. If absent, do nothing (current first-run prompt).
 - If present, run() openWorkspace(path) inside the existing busy/try/catch wrapper.
 - On success: setWorkspace + status "Reopened <root>".
-- On failure: forgetWorkspacePath(), setWorkspace(null), and show a non-alarming
-  message ("Previous folder could not be opened. Choose a folder."). Do not throw.
+- On failure: classify the error with isMissingFolderError().
+  - Genuinely missing folder: forgetWorkspacePath(), setWorkspace(null), and
+    show a non-alarming message ("Your last folder is no longer available.
+    Choose a folder.").
+  - Anything else (offline network drive, sync lock, database error): keep the
+    remembered path so the next launch retries, leave the app on the folder
+    prompt, and offer a "Stop reopening the last folder" link.
+  - Never clear the path on an unclassified failure. Do not throw either way.
 
 3. PERSIST ON SELECTION (App.tsx chooseWorkspace)
 - Only after openWorkspace succeeds, call saveWorkspacePath(selected).
@@ -44,6 +50,12 @@ speed, demo behaviour, or existing activity history.
 - Preferred fix, separate from this plan: persist a stable workspace identifier in
   the database (or a sidecar file keyed by a stable id) so history follows the
   folder across renames. Track as its own issue.
+- Status in this change: deferred. No history is destroyed — the original
+  database is never written to or removed — but the reopened folder looks empty
+  until it is renamed back. The minimum safe behaviour above needs canonical
+  path normalisation first (Rust fs::canonicalize returns \\?\-prefixed paths on
+  Windows, which would never equal the path as stored), so it belongs with the
+  stable-id fix rather than being bolted on here. Tracked as a follow-up.
 
 6. DEMO MODE
 - Decided: skip persistence entirely when isDemoMode() is true.
@@ -65,7 +77,9 @@ speed, demo behaviour, or existing activity history.
 - First run, no remembered folder: prompts as today.
 - Select folder: loads, persists, "Change folder" still works.
 - Relaunch: folder reopens automatically without the folder picker.
-- Remembered folder deleted or moved: graceful fallback, prompt shown, path cleared.
+- Remembered folder deleted: graceful fallback, prompt shown, path cleared.
+- Remembered folder temporarily unreachable (offline drive, lock, database
+  error): prompt shown, path kept for the next launch, opt-out link offered.
 - Remembered folder renamed: does not silently present an empty history (see 5).
 - "Forget folder": returns to prompt, next launch does not auto-open.
 - Demo mode: still shows the banner and starts unopened; nothing persisted.
