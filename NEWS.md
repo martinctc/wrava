@@ -8,6 +8,8 @@ core feature set is still settling.
 
 ### Added
 
+- Reopens the last used writing folder on startup, with a Forget folder control
+  to clear it. Only the folder path is remembered, and never in the browser demo.
 - Deeper text analytics: a "Writing patterns" card on the analytics page shows
   the most frequent two-word pairs in the workspace, with stopwords removed.
 
