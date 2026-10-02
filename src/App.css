@@ -1139,7 +1139,8 @@ button:disabled {
 }
 
 .documents-card,
-.tags-card {
+.tags-card,
+.bigram-card {
   grid-column: 1 / -1;
 }
 
@@ -1238,6 +1239,40 @@ button:disabled {
 .tag-row > span:last-child {
   color: #7a7f76;
   font-size: 10px;
+}
+
+.bigram-breakdown {
+  display: grid;
+  gap: 6px;
+}
+
+.bigram-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #ecece5;
+  font-size: 13px;
+}
+
+.bigram-row:last-child {
+  border-bottom: none;
+}
+
+.bigram-phrase {
+  color: #3a4238;
+  font-weight: 500;
+}
+
+.bigram-count {
+  color: #6b7566;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.bigram-card {
+  grid-column: 1 / -1;
 }
 
 .tag-pill {

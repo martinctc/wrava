@@ -65,8 +65,9 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - List dated documents newest first by default, with a sidebar control to
   reverse the filename-date order. Undated documents follow dated ones.
 - Show the number of active documents alongside word activity.
-- Explore a 12-week activity trend, consistency heatmap, and per-document
-  and per-tag breakdowns on the detailed analytics page.
+- Explore a 12-week activity trend, consistency heatmap, per-document and
+  per-tag breakdowns, and common two-word phrase frequency on the detailed
+  analytics page.
 
 Existing files establish a zero-activity baseline when first indexed.
 

@@ -13,6 +13,7 @@ import type {
   TagActivity,
   WorkspaceView,
 } from "./types";
+import { computeBigrams } from "./bigrams";
 import { documentFilename, titleMarkdown } from "./documentIdentity";
 
 export const DEMO_WORKSPACE_ROOT = "Demo workspace (in your browser)";
@@ -297,6 +298,9 @@ class DemoStore {
       }
     }
 
+    const contents = this.files().map((path) => this.documents.get(path)!.content);
+    const bigrams = computeBigrams(contents);
+
     return {
       daily,
       documents,
@@ -304,6 +308,7 @@ class DemoStore {
       activeDocuments: documents.length,
       currentWordCount: documents.reduce((sum, doc) => sum + doc.currentWordCount, 0),
       tags: [...tagTotals.values()],
+      bigrams,
     };
   }
 }

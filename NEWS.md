@@ -6,6 +6,11 @@ core feature set is still settling.
 
 ## Unreleased
 
+### Added
+
+- Deeper text analytics: a "Writing patterns" card on the analytics page shows
+  the most frequent two-word pairs in the workspace, with stopwords removed.
+
 ## 0.1.1 - 2026-09-27
 
 ### Added

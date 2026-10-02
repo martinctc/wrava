@@ -1081,6 +1081,25 @@ function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
               )}
           </div>
         </article>
+
+        <article className="analytics-card bigram-card">
+          <div className="card-heading">
+            <div>
+              <h2>Writing patterns</h2>
+              <p>Most frequent two-word pairs · stopwords removed</p>
+            </div>
+          </div>
+          <div className="bigram-breakdown">
+            {analytics.bigrams.length ? analytics.bigrams.map((item) => (
+              <div className="bigram-row" key={item.phrase}>
+                <span className="bigram-phrase">"{item.phrase}"</span>
+                <span className="bigram-count">{item.count}</span>
+              </div>
+            )) : (
+              <p className="empty-analytics">Write more to see common phrases.</p>
+            )}
+          </div>
+        </article>
       </div>
     </section>
   );
