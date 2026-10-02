@@ -8,6 +8,7 @@ import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
+import { forgetWorkspacePath, isMissingFolderError, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
 import { goalProgress, sortDocuments, weekPace } from "./writingProgress";
 import { SettingsPanel } from "./SettingsPanel";
 import { SpellingMenu } from "./SpellingMenu";
@@ -83,6 +84,10 @@ function App() {
   const [documentNameSuggested, setDocumentNameSuggested] = useState(false);
   const [documentModalError, setDocumentModalError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  // Set when the remembered folder failed to open but was kept because the
+  // failure looked temporary, so the welcome panel can offer a way out.
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const saving = useRef(false);
   const [saveError, setSaveError] = useState("");
   const draftRef = useRef({ document, content, tagInput, editorMode });
@@ -203,8 +208,51 @@ function App() {
     }
     const selected = await chooseWorkspaceFolder();
     if (!selected) return;
-    const next = await run(() => openWorkspace(selected));
-    setWorkspace(next);
+    await openRememberedWorkspace(selected);
+  }
+
+  // Opens a folder and, outside the browser demo, remembers it for next launch.
+  // The path is only stored once the backend confirms the folder opened.
+  async function openRememberedWorkspace(path: string) {
+    setRestoring(path);
+    try {
+      const next = await run(() => openWorkspace(path));
+      let rememberFailure = "";
+      if (!isDemoMode()) {
+        try {
+          saveWorkspacePath(localStorage, path);
+        } catch (error) {
+          rememberFailure = ` Could not remember this folder for next time: ${String(error)}`;
+        }
+      }
+      setWorkspace(next);
+      setRestoreFailed(false);
+      setDocument(null);
+      setAnalytics(null);
+      setContent("");
+      setSavedContent("");
+      setTagInput("");
+      setDocumentSearch("");
+      setFocusMode(false);
+      setPage("write");
+      setStatus(
+        (next.files.length
+          ? `Tracking ${next.files.length} Markdown file${next.files.length === 1 ? "" : "s"}.`
+          : "Workspace ready. Create your first Markdown file.") + rememberFailure,
+      );
+    } finally {
+      setRestoring(null);
+    }
+  }
+
+  function forgetWorkspace() {
+    try {
+      forgetWorkspacePath(localStorage);
+    } catch (error) {
+      setStatus(`Could not forget this folder: ${String(error)}`);
+      return;
+    }
+    setWorkspace(null);
     setDocument(null);
     setAnalytics(null);
     setContent("");
@@ -212,13 +260,55 @@ function App() {
     setTagInput("");
     setDocumentSearch("");
     setFocusMode(false);
+    setRestoreFailed(false);
     setPage("write");
-    setStatus(
-      next.files.length
-        ? `Tracking ${next.files.length} Markdown file${next.files.length === 1 ? "" : "s"}.`
-        : "Workspace ready. Create your first Markdown file.",
-    );
+    setStatus("Forgot this folder. Choose a folder to begin tracking your writing.");
   }
+
+  // Reopen the last folder on startup. Guarded so it cannot race autosave or the
+  // unsaved-changes warning, and skipped entirely in the browser demo, which
+  // does not persist anything between visits.
+  useEffect(() => {
+    if (isDemoMode() || workspace || document) return;
+    let remembered: string | null = null;
+    try {
+      remembered = loadWorkspacePath(localStorage);
+    } catch {
+      return;
+    }
+    if (!remembered) return;
+    let active = true;
+    void (async () => {
+      setRestoring(remembered!);
+      try {
+        const next = await run(() => openWorkspace(remembered!));
+        if (!active) return;
+        setWorkspace(next);
+        setStatus(`Reopened ${next.root}.`);
+      } catch (error) {
+        if (!active) return;
+        if (isMissingFolderError(error)) {
+          // The folder itself is gone. Forget it so the next launch does not
+          // retry, and fall back to the folder prompt.
+          try {
+            forgetWorkspacePath(localStorage);
+          } catch {
+            // Storage is unavailable; the prompt still works.
+          }
+          setStatus("Your last folder is no longer available. Choose a folder to continue.");
+        } else {
+          // Anything else may be temporary — an offline network drive, a sync
+          // tool holding a lock, a database conflict. Keep the path so the next
+          // launch retries, and offer an explicit way out instead.
+          setRestoreFailed(true);
+          setStatus("Could not reopen your last folder right now. It will be tried again on the next launch.");
+        }
+      } finally {
+        if (active) setRestoring(null);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
 
   async function selectDocument(path: string) {
     if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes?")) {
@@ -575,7 +665,18 @@ function App() {
             </div>
             {workspace ? (
               <>
-                <p className="workspace-path" title={workspace.root}>{workspace.root}</p>
+                <p className="workspace-path" title={workspace.root}>
+                  <span>{workspace.root}</span>
+                  <button
+                    type="button"
+                    className="forget-workspace"
+                    onClick={forgetWorkspace}
+                    disabled={busy}
+                    title="Stop reopening this folder on startup"
+                  >
+                    Forget
+                  </button>
+                </p>
                 <label className="document-search">
                   <span className="sr-only">Search documents</span>
                   <input
@@ -715,15 +816,40 @@ function App() {
             ) : (
               <div className="welcome-panel">
                 <div className="welcome-mark">W</div>
-                <p className="eyebrow">Your words, your files</p>
-                <h1>Make your writing visible.</h1>
-                <p>
-                  Choose a folder of Markdown files. Wrava will establish a baseline,
-                  then track additions and document growth from every accepted change.
-                </p>
-                <button className="primary-button" onClick={chooseWorkspace} disabled={busy}>
-                  Choose writing folder
-                </button>
+                {restoring ? (
+                  <>
+                    <p className="eyebrow">Reopening your folder</p>
+                    <h1>One moment…</h1>
+                    <p title={restoring}>
+                      Wrava is reopening <strong>{restoring}</strong> and re-reading
+                      your Markdown files.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="eyebrow">Your words, your files</p>
+                    <h1>Make your writing visible.</h1>
+                    <p>
+                      Choose a folder of Markdown files. Wrava will establish a baseline,
+                      then track additions and document growth from every accepted change.
+                    </p>
+                    <button className="primary-button" onClick={chooseWorkspace} disabled={busy}>
+                      Choose writing folder
+                    </button>
+                    {restoreFailed && (
+                      <div>
+                        <button
+                          type="button"
+                          className="text-button restore-fallback"
+                          onClick={forgetWorkspace}
+                          disabled={busy}
+                        >
+                          Stop reopening the last folder
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </section>

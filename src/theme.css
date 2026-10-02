@@ -96,6 +96,21 @@
 [data-theme="dark"] .goal-track span { background: var(--dark-accent); }
 [data-theme="dark"] .document-sort:hover { background: #344335; }
 
+[data-theme="dark"] .forget-workspace {
+  color: var(--dark-muted);
+  border-color: var(--dark-border);
+}
+
+[data-theme="dark"] .forget-workspace:hover:not(:disabled) {
+  color: var(--dark-accent);
+  border-color: var(--dark-muted);
+  background: #344335;
+}
+
+[data-theme="dark"] .forget-workspace:focus-visible {
+  outline-color: var(--dark-accent);
+}
+
 [data-theme="dark"] :is(.file-button:hover, .formatting-bar button:hover, .icon-button:hover, .icon-button[aria-pressed="true"], .file-button.active, .file-count, .card-heading > span, .tag-pill) {
   color: var(--dark-accent);
   background: #344335;

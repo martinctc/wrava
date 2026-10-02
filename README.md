@@ -17,6 +17,15 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 ## Current vertical slice
 
 - Select and index a folder of Markdown files.
+- Reopen the last used folder on launch instead of being asked to pick it every
+  time. Only the folder path is remembered, on this device, and never in the
+  browser demo. A Forget control beside the folder path stops reopening it, and
+  a missing folder falls back to the folder prompt.
+- Keep activity history when a writing folder is renamed or moved. Wrava writes
+  a small `wrava.json` into the folder holding a stable id, and keys its local
+  database by that id instead of the folder path. A copied folder is given its
+  own history rather than sharing one. Deleting `wrava.json` by hand makes that
+  folder look new to Wrava.
 - Give your writing its own title, stored as the first Markdown H1.
   New files suggest `yyyy-mm-dd_title-slug.md`, capped at 80 characters by default, including
   the date and extension. You can override this before creating the file.
@@ -125,6 +134,11 @@ To cut a release:
 Wrava does not upload document contents or activity data. Markdown files remain
 in the selected workspace. Derived activity data is stored in the operating
 system's local application-data directory.
+
+Wrava writes one file into the selected folder, `wrava.json`, so a folder's
+history survives being renamed or moved. It contains a random identifier and
+the folder's own path — never document contents or activity data. Wrava only
+ever creates and updates this file; it does not remove it.
 
 The bundled British and US spellcheck dictionaries run entirely on the device.
 System-default spellchecking follows the host's spelling settings. Appearance,
