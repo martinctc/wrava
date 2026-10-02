@@ -69,6 +69,13 @@ struct ActivityStats {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct BigramResult {
+    phrase: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AnalyticsView {
     daily: Vec<DailyActivity>,
     documents: Vec<DocumentActivity>,
@@ -76,6 +83,7 @@ struct AnalyticsView {
     active_documents: usize,
     current_word_count: i64,
     tags: Vec<TagActivity>,
+    bigrams: Vec<BigramResult>,
 }
 
 #[derive(Serialize)]
@@ -568,6 +576,7 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(display_error)?;
     let mut tags = BTreeMap::<String, TagActivity>::new();
+    let mut document_contents: Vec<String> = Vec::new();
     for document in &mut documents {
         let content: String = database
             .query_row(
@@ -577,6 +586,7 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
             )
             .map_err(display_error)?;
         document.tags = document_tags(&content);
+        document_contents.push(content.clone());
         for tag in &document.tags {
             let activity = tags
                 .entry(tag.to_lowercase())
@@ -607,13 +617,16 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
         .filter(|document| document.words_added > 0 || document.words_deleted > 0)
         .count();
 
+    let bigrams = compute_bigrams(&document_contents);
+
     Ok(AnalyticsView {
-        daily,
-        documents,
-        active_days,
-        active_documents,
-        current_word_count,
-        tags: tags.into_values().collect(),
+      daily,
+      documents,
+      active_days,
+      active_documents,
+      current_word_count,
+      tags: tags.into_values().collect(),
+      bigrams,
     })
 }
 
@@ -633,6 +646,59 @@ fn prose_words(markdown: &str) -> Vec<String> {
         }
     }
     words
+}
+
+const STOPWORDS: &[&str] = &[
+  "the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "her", "was", "one", "our",
+  "out", "day", "get", "have", "him", "his", "how", "man", "new", "now", "old", "see", "two", "way", "who",
+  "boy", "did", "its", "let", "put", "say", "she", "too", "use", "many", "over", "such", "take", "than",
+  "them", "well", "were", "that", "with", "this", "from", "they", "know", "want", "been", "good", "much",
+  "some", "time", "very", "when", "make", "like", "will", "just", "first", "other", "after", "back", "little",
+  "only", "there", "their", "what", "which", "while", "world", "would", "think", "where", "being", "every",
+  "great", "through", "during", "before", "should", "each", "find", "work", "part", "life", "call", "come",
+  "also", "more", "around", "another", "most", "around", "between", "under", "right", "left", "high", "low",
+  "early", "late", "here", "why", "all", "few", "more", "most", "other", "some", "such", "no", "nor", "only",
+  "own", "same", "so", "too", "am", "is", "was", "were", "be", "been", "being", "have", "has", "had", "do",
+  "does", "did", "done", "doing", "would", "could", "should", "may", "might", "must", "need", "dare", "ought",
+  "used", "got", "go", "going", "went", "gone", "leave", "leaving", "left", "feel", "feeling", "felt", "try",
+  "trying", "tried", "help", "helping", "helped", "show", "showing", "showed", "hear", "hearing", "heard", "play",
+  "playing", "played", "run", "running", "ran", "move", "moving", "moved", "live", "living", "lived", "believe",
+  "believing", "believed", "bring", "bringing", "brought", "happen", "happening", "happened", "stand", "standing",
+  "stood", "lose", "losing", "lost", "pay", "paying", "paid", "meet", "meeting", "met", "include", "including",
+  "included", "continue", "continuing", "continued", "set", "setting", "learn", "learning", "learned", "change",
+  "changing", "changed", "lead", "leading", "led", "understand", "understanding", "understood", "watch", "watching",
+  "watched", "follow", "following", "followed", "stop", "stopping", "stopped", "create", "creating", "created",
+  "speak", "speaking", "spoke", "spoken", "read", "reading", "allow", "allowing", "allowed", "add", "adding", "added",
+  "spend", "spending", "spent", "grow", "growing", "grew", "grown", "open", "opening", "opened", "walk", "walking",
+  "walked", "win", "winning", "offer", "offering", "offered", "remember", "remembering", "remembered", "love",
+  "loving", "loved", "consider", "considering", "considered", "appear", "appearing", "appeared", "buy", "buying",
+  "bought", "wait", "waiting", "waited", "serve", "serving", "served", "die", "dying", "died", "send", "sending",
+  "sent", "expect", "expecting", "expected", "build", "building", "built", "stay", "staying", "stayed", "fall",
+  "falling", "fell", "fallen", "cut", "cutting", "reach", "reaching", "reached", "kill", "killing", "killed",
+  "remain", "remaining", "remained", "suggest", "suggesting", "suggested", "raise", "raising", "raised", "pass",
+  "passing", "passed", "sell", "selling", "sold", "require", "requiring", "required", "report", "reporting",
+  "reported", "decide", "deciding", "decided", "pull", "pulling", "pulled",
+];
+
+fn compute_bigrams(contents: &[String]) -> Vec<BigramResult> {
+    let stop_set: std::collections::HashSet<&str> = STOPWORDS.iter().cloned().collect();
+    let mut counts: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    for content in contents {
+        let body = strip_front_matter(content);
+        let words = prose_words(body);
+        let filtered: Vec<&str> = words
+            .iter()
+            .filter(|w| w.len() >= 3 && !stop_set.contains(w.as_str()))
+            .map(|w| w.as_str())
+            .collect();
+        for window in filtered.windows(2) {
+            let phrase = format!("{} {}", window[0], window[1]);
+            *counts.entry(phrase).or_insert(0) += 1;
+        }
+    }
+    let mut results: Vec<(String, i64)> = counts.into_iter().collect();
+    results.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    results.into_iter().take(8).map(|(phrase, count)| BigramResult { phrase, count }).collect()
 }
 
 fn strip_front_matter(markdown: &str) -> &str {

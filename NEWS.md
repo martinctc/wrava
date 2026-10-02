@@ -6,6 +6,25 @@ core feature set is still settling.
 
 ## Unreleased
 
+### Added
+
+- Deeper text analytics: a "Writing patterns" card on the analytics page shows
+  the most frequent two-word pairs in the workspace, with stopwords removed.
+
+## 0.1.1 - 2026-09-27
+
+### Added
+
+- Optional daily, weekly, monthly and yearly net-growth goals, with progress,
+  weekly average and the pace needed to reach a weekly target.
+- A newest/oldest filename-date document sort control and preference.
+
+### Changed
+
+- Today and this week lead the Write-page activity summary. Month and year
+  totals are available in a collapsible section, and net growth is labelled
+  clearly instead of as document growth.
+
 ## 0.1.0 - 2026-09-22
 
 ### Added

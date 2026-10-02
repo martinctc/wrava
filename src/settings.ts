@@ -1,3 +1,5 @@
+import { emptyGoals, type WritingGoals } from "./writingProgress.ts";
+
 export type Theme = "light" | "dark";
 export type SpellingLanguage = "system" | "en-GB" | "en-US" | "off";
 export type FilenamePreferences = { includeDate: boolean; maxLength: number };
@@ -7,6 +9,8 @@ export type Settings = {
   autosave: boolean;
   editorFontSize: number;
   filename: FilenamePreferences;
+  goals: WritingGoals;
+  documentOrder: "newest" | "oldest";
 };
 
 export const SETTINGS_KEY = "wrava.settings.v1";
@@ -16,6 +20,8 @@ export const defaultSettings: Settings = {
   autosave: true,
   editorFontSize: 16,
   filename: { includeDate: true, maxLength: 80 },
+  goals: emptyGoals,
+  documentOrder: "newest",
 };
 
 export function validateSettings(value: unknown): Settings {
@@ -24,6 +30,8 @@ export function validateSettings(value: unknown): Settings {
   const filename = data.filename;
   const autosave = data.autosave === undefined ? defaultSettings.autosave : data.autosave;
   const editorFontSize = data.editorFontSize === undefined ? defaultSettings.editorFontSize : data.editorFontSize;
+  const goals = data.goals === undefined ? emptyGoals : data.goals;
+  const documentOrder = data.documentOrder === undefined ? "newest" : data.documentOrder;
   if (typeof autosave !== "boolean") throw new Error("Choose whether to autosave.");
   if (typeof editorFontSize !== "number" || !Number.isInteger(editorFontSize) || editorFontSize < 12 || editorFontSize > 28) {
     throw new Error("Editor font size must be a whole number between 12 and 28.");
@@ -31,6 +39,19 @@ export function validateSettings(value: unknown): Settings {
   if (data.theme !== "light" && data.theme !== "dark") throw new Error("Choose Light or Dark.");
   if (data.spelling !== "system" && data.spelling !== "en-GB" && data.spelling !== "en-US" && data.spelling !== "off") {
     throw new Error("Choose a supported spellcheck language.");
+  }
+  if (documentOrder !== "newest" && documentOrder !== "oldest") {
+    throw new Error("Choose a document order.");
+  }
+  if (!goals || typeof goals !== "object" || Array.isArray(goals)) {
+    throw new Error("Writing goals are missing.");
+  }
+  const goalValues = goals as Record<string, unknown>;
+  for (const period of ["today", "week", "month", "year"] as const) {
+    const goal = goalValues[period];
+    if (typeof goal !== "number" || !Number.isSafeInteger(goal) || goal < 0 || goal > 10_000_000) {
+      throw new Error(`${period} goal must be a whole number between 0 and 10,000,000.`);
+    }
   }
   if (!filename || typeof filename !== "object") throw new Error("Filename settings are missing.");
   const file = filename as Record<string, unknown>;
@@ -44,6 +65,9 @@ export function validateSettings(value: unknown): Settings {
     autosave,
     editorFontSize,
     filename: { includeDate: file.includeDate, maxLength: file.maxLength },
+    goals: { today: goalValues.today as number, week: goalValues.week as number,
+      month: goalValues.month as number, year: goalValues.year as number },
+    documentOrder,
   };
 }
 

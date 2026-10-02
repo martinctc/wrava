@@ -60,6 +60,8 @@ export type TagActivity = {
   netChange: number;
 };
 
+export type BigramResult = { phrase: string; count: number };
+
 export type AnalyticsView = {
   daily: DailyActivity[];
   documents: DocumentActivity[];
@@ -67,6 +69,7 @@ export type AnalyticsView = {
   activeDocuments: number;
   currentWordCount: number;
   tags: TagActivity[];
+  bigrams: BigramResult[];
 };
 
 export const emptyStats: ActivityStats = {

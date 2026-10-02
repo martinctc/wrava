@@ -1,7 +1,7 @@
 {
   "name": "wrava",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "A local-first desktop writing editor and activity tracker.",
   "license": "MIT",

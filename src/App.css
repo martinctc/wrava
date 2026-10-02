@@ -22,7 +22,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-rows: auto var(--activity-height, 132px) minmax(0, 1fr) 34px;
+  grid-template-rows: auto var(--activity-height, auto) minmax(0, 1fr) 34px;
   height: 100vh;
   background:
     radial-gradient(circle at top right, rgba(212, 230, 204, 0.55), transparent 28%),
@@ -39,7 +39,7 @@ button {
 }
 
 .app-shell.has-demo-banner {
-  grid-template-rows: auto auto var(--activity-height, 132px) minmax(0, 1fr) 34px;
+  grid-template-rows: auto auto var(--activity-height, auto) minmax(0, 1fr) 34px;
 }
 
 .app-shell.compact-activity {
@@ -167,10 +167,39 @@ button:disabled {
 }
 
 .metric-strip {
+  max-height: min(230px, 35vh);
+  padding: 12px 24px 8px;
+  overflow-y: auto;
+}
+
+.metric-primary,
+.metric-secondary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
-  padding: 16px 24px;
+}
+
+.more-activity {
+  margin-top: 8px;
+}
+
+.more-activity summary {
+  width: fit-content;
+  padding: 4px 0;
+  color: #315b3a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.more-activity summary span {
+  margin-left: 8px;
+  color: #74786f;
+  font-weight: 400;
+}
+
+.metric-secondary {
+  padding: 8px 0;
 }
 
 .metric-strip-compact {
@@ -215,6 +244,41 @@ button:disabled {
   font-family: inherit;
   font-size: 30px;
   line-height: 1.2;
+}
+
+.metric-card strong em {
+  color: #74786f;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.metric-card strong.negative {
+  color: #9b4b43;
+}
+
+.goal-track {
+  height: 6px;
+  margin: 8px 0 5px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #e4e9df;
+}
+
+.goal-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #52765a;
+}
+
+.metric-card .goal-caption {
+  color: #315b3a;
+}
+
+.metric-card .pace-caption {
+  margin: 5px 0;
+  color: #6b7068;
 }
 
 .metric-card small {
@@ -275,6 +339,30 @@ button:disabled {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.sidebar-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.document-sort {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #315b3a;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.document-sort:hover,
+.document-sort:focus-visible {
+  background: #e3e6dc;
 }
 
 .document-search {
@@ -1051,7 +1139,8 @@ button:disabled {
 }
 
 .documents-card,
-.tags-card {
+.tags-card,
+.bigram-card {
   grid-column: 1 / -1;
 }
 
@@ -1152,6 +1241,40 @@ button:disabled {
   font-size: 10px;
 }
 
+.bigram-breakdown {
+  display: grid;
+  gap: 6px;
+}
+
+.bigram-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #ecece5;
+  font-size: 13px;
+}
+
+.bigram-row:last-child {
+  border-bottom: none;
+}
+
+.bigram-phrase {
+  color: #3a4238;
+  font-weight: 500;
+}
+
+.bigram-count {
+  color: #6b7566;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.bigram-card {
+  grid-column: 1 / -1;
+}
+
 .tag-pill {
   width: fit-content;
   padding: 3px 7px;
@@ -1165,6 +1288,18 @@ button:disabled {
 @media (max-width: 1100px) {
   .analytics-grid {
     grid-template-columns: 1fr;
+  }
+
+  @media (max-width: 760px) {
+    .metric-primary,
+    .metric-secondary {
+      gap: 8px;
+    }
+
+    .metric-strip {
+      padding-right: 10px;
+      padding-left: 10px;
+    }
   }
 
   @media (max-width: 760px) {
