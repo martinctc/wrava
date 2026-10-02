@@ -39,23 +39,24 @@ speed, demo behaviour, or existing activity history.
 - If the folder is large, this is the first thing to profile; consider deferring
   reconcile or reporting progress in a follow-up, out of scope here.
 
-5. FOLDER RENAME / MOVE — PRE-EXISTING DATA LOSS (do not ship auto-open without this)
-- The SQLite database is keyed by content_hash(canonicalized root) at
-  src-tauri/src/lib.rs:131. Renaming or moving the folder changes the hash, so
-  Wrava creates a brand new empty database and all prior activity history is
-  silently lost, leaving an apparently empty workspace.
-- Minimum safe behaviour: when auto-open succeeds, compare the canonicalized root
-  with the remembered path. If they differ, treat it as a different workspace and
-  do not silently overwrite the history for the original path.
-- Preferred fix, separate from this plan: persist a stable workspace identifier in
-  the database (or a sidecar file keyed by a stable id) so history follows the
-  folder across renames. Track as its own issue.
-- Status in this change: deferred. No history is destroyed — the original
-  database is never written to or removed — but the reopened folder looks empty
-  until it is renamed back. The minimum safe behaviour above needs canonical
-  path normalisation first (Rust fs::canonicalize returns \\?\-prefixed paths on
-  Windows, which would never equal the path as stored), so it belongs with the
-  stable-id fix rather than being bolted on here. Tracked as a follow-up.
+5. FOLDER RENAME / MOVE — HISTORY FOLLOWS THE FOLDER (resolved)
+- The original problem: the SQLite database was keyed by
+  content_hash(canonicalized root) at src-tauri/src/lib.rs, so renaming or moving
+  the folder changed the hash, Wrava created a brand new empty database, and all
+  prior activity history stopped being shown.
+- Resolved: Wrava writes wrava.json into the writing folder holding a stable id
+  plus the folder's current canonical location, and keys the database by that id
+  instead of the path. A rename or move keeps its history.
+- Copy detection: if the recorded location in wrava.json still exists somewhere
+  else, the folder is a copy rather than a move, so it is given a fresh id. Two
+  folders never share a single activity record.
+- Migration: when a folder gains an identity, an existing path-keyed database is
+  moved across to the new key so nothing is abandoned. If that move fails, the
+  session stays on the old database and the move is retried next launch.
+- Fallback: a read-only folder, or a wrava.json Wrava did not write, keeps the
+  old path-derived key — exactly the pre-identity behaviour, never an error.
+- Limitation: the id lives only in wrava.json. Deleting that file by hand makes
+  the folder look new to Wrava; Wrava never deletes it itself.
 
 6. DEMO MODE
 - Decided: skip persistence entirely when isDemoMode() is true.

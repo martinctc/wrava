@@ -10,6 +10,10 @@ core feature set is still settling.
 
 - Reopens the last used writing folder on startup, with a Forget folder control
   to clear it. Only the folder path is remembered, and never in the browser demo.
+- Activity history now survives renaming or moving a writing folder. Wrava
+  writes a small `wrava.json` into the folder holding a stable id, and keys its
+  local database by that id instead of the folder path. A copied folder is given
+  its own history rather than sharing one.
 - Deeper text analytics: a "Writing patterns" card on the analytics page shows
   the most frequent two-word pairs in the workspace, with stopwords removed.
 

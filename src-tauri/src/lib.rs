@@ -2,7 +2,7 @@ use atomicwrites::{AllowOverwrite, AtomicFile, DisallowOverwrite};
 use chrono::{Datelike, Local, NaiveDate};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use similar::{ChangeTag, TextDiff};
 use std::{
@@ -15,6 +15,11 @@ use std::{
 use tauri::{Manager, State};
 use unicode_segmentation::UnicodeSegmentation;
 use walkdir::{DirEntry, WalkDir};
+
+/// Written into the writing folder itself. It holds the stable identity that
+/// keeps activity history attached to a folder across renames and moves.
+const IDENTITY_FILE: &str = "wrava.json";
+const DATABASE_FILE: &str = "wrava.sqlite3";
 
 #[derive(Default)]
 struct AppState {
@@ -128,14 +133,18 @@ fn open_workspace(
         return Err("The selected workspace is not a folder.".into());
     }
 
-    let workspace_key = content_hash(root.to_string_lossy().as_ref());
-    let database_path = app
+    // The stable identity lives in the folder itself so history survives
+    // renames and moves. When it cannot be used — read-only folder, or a
+    // wrava.json Wrava did not write — fall back to the old path-derived key,
+    // which is exactly how the app behaved before identities existed.
+    let legacy_key = content_hash(root.to_string_lossy().as_ref());
+    let stable_key = ensure_identity(&root).map(|identity| content_hash(&identity.id));
+    let workspaces = app
         .path()
         .app_local_data_dir()
         .map_err(display_error)?
-        .join("workspaces")
-        .join(&workspace_key[..16])
-        .join("wrava.sqlite3");
+        .join("workspaces");
+    let database_path = resolve_database_path(&workspaces, stable_key.as_deref(), &legacy_key)?;
     if let Some(parent) = database_path.parent() {
         fs::create_dir_all(parent).map_err(display_error)?;
     }
@@ -357,7 +366,7 @@ fn initialize_database(database: &Connection) -> Result<(), String> {
 
 fn workspace_view(workspace: &Workspace) -> Result<WorkspaceView, String> {
     Ok(WorkspaceView {
-        root: workspace.root.to_string_lossy().into_owned(),
+        root: display_root(&workspace.root),
         files: markdown_files(&workspace.root)?,
         stats: activity_stats(&workspace.database)?,
     })
@@ -980,6 +989,170 @@ fn yaml_tag(value: &str) -> String {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct WorkspaceIdentity {
+    id: String,
+    root: String,
+}
+
+enum IdentityFile {
+    Missing,
+    Recognised(WorkspaceIdentity),
+    /// Present, but not an identity Wrava wrote. Never overwritten.
+    Unrecognised,
+}
+
+fn identity_path(root: &Path) -> PathBuf {
+    root.join(IDENTITY_FILE)
+}
+
+fn read_identity(root: &Path) -> IdentityFile {
+    match fs::read_to_string(identity_path(root)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => IdentityFile::Missing,
+        Err(_) => IdentityFile::Unrecognised,
+        Ok(contents) => match serde_json::from_str::<WorkspaceIdentity>(&contents) {
+            Ok(identity) if !identity.id.trim().is_empty() => IdentityFile::Recognised(identity),
+            _ => IdentityFile::Unrecognised,
+        },
+    }
+}
+
+fn write_identity(root: &Path, identity: &WorkspaceIdentity, overwrite: bool) -> Option<()> {
+    let contents = format!("{}\n", serde_json::to_string_pretty(identity).ok()?);
+    let behavior = if overwrite {
+        AllowOverwrite
+    } else {
+        DisallowOverwrite
+    };
+    AtomicFile::new(identity_path(root), behavior)
+        .write(|file| file.write_all(contents.as_bytes()))
+        .ok()
+}
+
+/// Resolves which stable identity this folder should keep.
+///
+/// Returns `None` only when Wrava cannot record one, in which case the caller
+/// falls back to the path-derived database key.
+fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
+    let stored_root = display_root(root);
+    match read_identity(root) {
+        IdentityFile::Unrecognised => None,
+        IdentityFile::Missing => {
+            let identity = WorkspaceIdentity {
+                id: new_workspace_id(),
+                root: stored_root,
+            };
+            write_identity(root, &identity, false)?;
+            Some(identity)
+        }
+        IdentityFile::Recognised(existing) => {
+            let recorded = fs::canonicalize(&existing.root).ok();
+            match recorded {
+                // Another folder still exists at the recorded location, so this
+                // one is a copy. Give it its own history rather than merging two
+                // folders into a single activity record.
+                Some(recorded) if !same_path(&recorded, root) => {
+                    let identity = WorkspaceIdentity {
+                        id: new_workspace_id(),
+                        root: stored_root,
+                    };
+                    write_identity(root, &identity, true)?;
+                    Some(identity)
+                }
+                // The recorded folder is gone: this is the same folder, moved.
+                // The id is kept, so the history follows it.
+                _ => {
+                    if existing.root != stored_root {
+                        let refreshed = WorkspaceIdentity {
+                            id: existing.id.clone(),
+                            root: stored_root.clone(),
+                        };
+                        let _ = write_identity(root, &refreshed, true);
+                    }
+                    Some(WorkspaceIdentity {
+                        id: existing.id,
+                        root: stored_root,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Picks the database file for this open.
+///
+/// Existing databases were keyed by the folder path. When a stable key is in
+/// play and its database is missing, the old directory is moved across so the
+/// history is adopted rather than abandoned. If that move fails, the legacy
+/// database is used for this session and migration is retried next time.
+fn resolve_database_path(
+    workspaces: &Path,
+    stable_key: Option<&str>,
+    legacy_key: &str,
+) -> Result<PathBuf, String> {
+    let legacy_directory = workspaces.join(&legacy_key[..16]);
+    let legacy_database = legacy_directory.join(DATABASE_FILE);
+
+    let Some(stable_key) = stable_key else {
+        return Ok(legacy_database);
+    };
+    if stable_key == legacy_key {
+        return Ok(workspaces.join(&stable_key[..16]).join(DATABASE_FILE));
+    }
+
+    let stable_directory = workspaces.join(&stable_key[..16]);
+    let stable_database = stable_directory.join(DATABASE_FILE);
+    if !stable_database.exists() && legacy_database.exists() {
+        fs::create_dir_all(workspaces).map_err(display_error)?;
+        if fs::rename(&legacy_directory, &stable_directory).is_ok() {
+            return Ok(stable_database);
+        }
+        return Ok(legacy_database);
+    }
+    Ok(stable_database)
+}
+
+/// The path as shown to the user. Rust's canonicalize returns Windows
+/// verbatim paths (`\\?\C:\...`), which are not what anyone wants to read.
+fn display_root(root: &Path) -> String {
+    let raw = root.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    raw.into_owned()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = left.to_string_lossy();
+    let right = right.to_string_lossy();
+    if std::env::consts::OS == "windows" {
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
+    }
+}
+
+fn new_workspace_id() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let seed = format!(
+        "{}:{}:{}",
+        std::process::id(),
+        elapsed,
+        RandomState::new().build_hasher().finish(),
+    );
+    content_hash(&seed)
+}
+
 fn content_hash(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
 }
@@ -1145,5 +1318,147 @@ mod tests {
         assert_eq!(analytics.active_days, 1);
         assert_eq!(analytics.current_word_count, 3);
         assert_eq!(analytics.documents[0].words_added, 1);
+    }
+
+    #[test]
+    fn display_root_hides_the_windows_verbatim_prefix() {
+        assert_eq!(
+            display_root(Path::new(r"\\?\C:\Users\kai\Writing")),
+            r"C:\Users\kai\Writing"
+        );
+        assert_eq!(
+            display_root(Path::new(r"\\?\UNC\server\share\Writing")),
+            r"\\server\share\Writing"
+        );
+        assert_eq!(display_root(Path::new("/home/kai/writing")), "/home/kai/writing");
+    }
+
+    #[test]
+    fn records_a_stable_identity_on_first_open() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let identity = ensure_identity(&root).expect("identity written");
+
+        assert!(!identity.id.is_empty());
+        assert_eq!(identity.root, display_root(&root));
+        assert!(matches!(
+            read_identity(&root),
+            IdentityFile::Recognised(stored) if stored.id == identity.id
+        ));
+    }
+
+    #[test]
+    fn keeps_the_identity_when_the_folder_is_renamed() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let before = directory.path().join("before");
+        fs::create_dir(&before).unwrap();
+        let original = ensure_identity(&fs::canonicalize(&before).unwrap())
+            .expect("identity written");
+
+        let after = directory.path().join("after");
+        fs::rename(&before, &after).unwrap();
+        let moved = fs::canonicalize(&after).unwrap();
+
+        let kept = ensure_identity(&moved).expect("identity read");
+
+        assert_eq!(kept.id, original.id, "history must follow the renamed folder");
+        assert_eq!(kept.root, display_root(&moved), "the recorded root is refreshed");
+    }
+
+    #[test]
+    fn issues_a_fresh_identity_for_a_copied_folder() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let original_directory = directory.path().join("original");
+        let copy_directory = directory.path().join("copy");
+        fs::create_dir(&original_directory).unwrap();
+        fs::create_dir(&copy_directory).unwrap();
+
+        let original_root = fs::canonicalize(&original_directory).unwrap();
+        let original = ensure_identity(&original_root).expect("identity written");
+
+        // A copied folder carries the same wrava.json, still naming the original.
+        let copy_root = fs::canonicalize(&copy_directory).unwrap();
+        let carried = serde_json::to_string(&WorkspaceIdentity {
+            id: original.id.clone(),
+            root: display_root(&original_root),
+        })
+        .unwrap();
+        fs::write(identity_path(&copy_root), format!("{carried}\n")).unwrap();
+
+        let copy = ensure_identity(&copy_root).expect("identity written");
+
+        assert_ne!(copy.id, original.id, "copies must not share one history");
+        assert_eq!(copy.root, display_root(&copy_root));
+    }
+
+    #[test]
+    fn never_overwrites_an_identity_file_it_did_not_write() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let contents = "{\"project\":\"someone elses file\"}\n";
+        fs::write(identity_path(&root), contents).unwrap();
+
+        assert!(ensure_identity(&root).is_none());
+        assert_eq!(fs::read_to_string(identity_path(&root)).unwrap(), contents);
+    }
+
+    #[test]
+    fn moves_the_legacy_database_when_adopting_a_stable_identity() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            workspaces.join(&stable_key[..16]).join(DATABASE_FILE)
+        );
+        assert!(resolved.exists(), "the old database is adopted");
+        assert!(!legacy_directory.exists(), "the old directory is moved away");
+    }
+
+    #[test]
+    fn keeps_the_legacy_database_when_no_identity_can_be_written() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+
+        let resolved = resolve_database_path(&workspaces, None, &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            workspaces.join(&legacy_key[..16]).join(DATABASE_FILE)
+        );
+    }
+
+    #[test]
+    fn prefers_the_stable_database_once_it_exists() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::create_dir_all(&stable_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "old").unwrap();
+        fs::write(stable_directory.join(DATABASE_FILE), "current").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            stable_directory.join(DATABASE_FILE),
+            "both exist, so the stable one wins"
+        );
+        assert!(legacy_directory.exists(), "the legacy database is left alone");
     }
 }
