@@ -149,7 +149,7 @@ fn open_workspace(
         fs::create_dir_all(parent).map_err(display_error)?;
     }
 
-    let database = Connection::open(database_path).map_err(display_error)?;
+    let database = open_database(&database_path)?;
     initialize_database(&database)?;
     let mut workspace = Workspace { root, database };
     reconcile(&mut workspace)?;
@@ -747,7 +747,6 @@ fn markdown_files(root: &Path) -> Result<Vec<String>, String> {
     files.sort_by_key(|path| path.to_lowercase());
     Ok(files)
 }
-
 fn visible_entry(entry: &DirEntry) -> bool {
     if entry.depth() == 0 {
         return true;
@@ -756,8 +755,24 @@ fn visible_entry(entry: &DirEntry) -> bool {
     !name.starts_with('.') && name != "node_modules"
 }
 
+/// Shortest query worth walking a workspace for. Below this the sidebar keeps
+/// filtering by file name — which costs nothing — and asks for nothing here.
+/// Far longer than any real document path, and cheap to check: a caller that
+/// sends a megabyte of text should not make the process allocate for it.
+const MAX_DOCUMENT_PATH_BYTES: usize = 4096;
+
 fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    // Rejected before the path is parsed. A NUL byte truncates the path for
+    // every Win32 call that follows, and an unbounded string is a denial of
+    // service dressed up as a file name.
+    if relative.len() > MAX_DOCUMENT_PATH_BYTES || relative.contains('\0') {
+        return Err("The requested document path is not allowed.".into());
+    }
+
     let relative_path = Path::new(relative);
+    // Traversal is decided per component, not per character. A textual ".."
+    // check would reject legitimate names such as "draft..notes.md", so the
+    // Component::ParentDir test below is the whole defence.
     if relative_path.is_absolute()
         || relative_path
             .components()
@@ -962,9 +977,28 @@ fn front_matter(content: &str) -> Option<(&str, &str)> {
     } else {
         return None;
     };
-    let closing = format!("{newline}---{newline}");
-    let closing_index = content[opening_length..].find(&closing)? + opening_length;
-    let body_start = closing_index + closing.len();
+    let fence = format!("{newline}---");
+    let search = &content[opening_length..];
+    // The closing fence is a line of its own, and the last line of a file needs no
+    // newline after it: `---\ntags: [essay]\n---` is valid front matter. Requiring a
+    // trailing newline here dropped the tags of every metadata-only document, and the
+    // TypeScript splitter's `|$` alternative does accept end-of-input, so the two sides
+    // disagreed about which documents had metadata at all. Take the first fence whose
+    // remainder is either another line or the end of the file, so a body that merely
+    // starts with `---` (a horizontal rule) is still not mistaken for the close.
+    let closing_index = search
+        .match_indices(&fence)
+        .find(|(index, _)| {
+            let rest = &search[index + fence.len()..];
+            rest.is_empty() || rest.starts_with(newline)
+        })
+        .map(|(index, _)| index + opening_length)?;
+    let rest = &content[closing_index + fence.len()..];
+    let body_start = if rest.starts_with(newline) {
+        closing_index + fence.len() + newline.len()
+    } else {
+        content.len()
+    };
     Some((
         &content[opening_length..closing_index],
         &content[body_start..],
@@ -1083,8 +1117,11 @@ fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
 ///
 /// Existing databases were keyed by the folder path. When a stable key is in
 /// play and its database is missing, the old directory is moved across so the
-/// history is adopted rather than abandoned. If that move fails, the legacy
-/// database is used for this session and migration is retried next time.
+/// history is adopted rather than abandoned. A copy of the database is taken
+/// before that move, because an interrupted move would otherwise cost the user
+/// their history with nothing to fall back on. If the move fails for any
+/// reason, the legacy database is used for this session and migration is
+/// retried next time.
 fn resolve_database_path(
     workspaces: &Path,
     stable_key: Option<&str>,
@@ -1104,12 +1141,64 @@ fn resolve_database_path(
     let stable_database = stable_directory.join(DATABASE_FILE);
     if !stable_database.exists() && legacy_database.exists() {
         fs::create_dir_all(workspaces).map_err(display_error)?;
-        if fs::rename(&legacy_directory, &stable_directory).is_ok() {
+        backup_database(&legacy_database);
+        // A successful rename is not proof of a usable database, so check the
+        // file actually arrived. Both failure modes — the move failing and the
+        // move not delivering — fall back to the legacy database rather than
+        // failing the open.
+        if fs::rename(&legacy_directory, &stable_directory).is_ok() && stable_database.exists() {
             return Ok(stable_database);
         }
         return Ok(legacy_database);
     }
     Ok(stable_database)
+}
+
+/// The recoverable copy kept beside a database that is about to be moved.
+fn database_backup(database: &Path) -> PathBuf {
+    database.with_file_name(format!("{DATABASE_FILE}.bak"))
+}
+
+/// Copies the database next to itself so the history survives a move that
+/// goes wrong. Failure is deliberately not fatal: a missing backup only means
+/// a worse outcome in a case the move already handles, and refusing to open
+/// the workspace over it would lose the user far more than it protects.
+fn backup_database(database: &Path) -> Option<PathBuf> {
+    let backup = database_backup(database);
+    match fs::copy(database, &backup) {
+        Ok(_) => Some(backup),
+        Err(_) => {
+            // A half-written backup is worse than none: it would look like a
+            // recovery path to a person reaching for one.
+            let _ = fs::remove_file(&backup);
+            None
+        }
+    }
+}
+
+/// Opens the activity database and checks it is readable before any query
+/// relies on it. The database is small and opened once per workspace, so a
+/// full integrity check costs nothing and turns a truncated file into an
+/// actionable message instead of a confusing SQLite error later on.
+fn open_database(path: &Path) -> Result<Connection, String> {
+    let database = Connection::open(path).map_err(display_error)?;
+    // Anything other than a clean "ok" — including a check that cannot be read
+    // at all — means the file cannot be trusted to hold the user's history.
+    let verdict = database
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .map_err(display_error);
+    if verdict.as_deref() != Ok("ok") {
+        let backup = database_backup(path);
+        let reason = verdict.unwrap_or_else(|error| error);
+        drop(database);
+        return Err(format!(
+            "The activity database for this folder appears to be corrupted ({reason}). \
+             Your documents are untouched, but the activity history cannot be read. \
+             If the copy kept at {} is present, it can be used to recover the history.",
+            backup.display()
+        ));
+    }
+    Ok(database)
 }
 
 /// The path as shown to the user. Rust's canonicalize returns Windows
@@ -1240,6 +1329,63 @@ mod tests {
     }
 
     #[test]
+    fn rejects_document_paths_carrying_a_nul_byte() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let error = resolve_document_path(&root, "draft\0.md").expect_err("a NUL byte is refused");
+
+        assert!(
+            error.contains("not allowed"),
+            "the error must read as a path rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_absurdly_long_document_paths() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let too_long = format!("{}.md", "a".repeat(MAX_DOCUMENT_PATH_BYTES));
+        assert!(
+            resolve_document_path(&root, &too_long).is_err(),
+            "a path past the bound is refused"
+        );
+
+        let generous = format!("{}.md", "a".repeat(MAX_DOCUMENT_PATH_BYTES - 4));
+        assert!(
+            resolve_document_path(&root, &generous).is_ok(),
+            "the bound must stay generous enough for real names"
+        );
+    }
+
+    #[test]
+    fn accepts_names_whose_dots_are_not_a_parent_component() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        for name in ["draft..notes.md", "chapter 1..3.md"] {
+            fs::write(root.join(name), "# Written").unwrap();
+
+            let resolved = resolve_document_path(&root, name).unwrap();
+
+            assert_eq!(
+                resolved,
+                root.join(name),
+                "'..' inside a name is not traversal"
+            );
+        }
+    }
+
+    #[test]
+    fn still_rejects_a_parent_directory_component() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(resolve_document_path(&root, "../escape.md").is_err());
+        assert!(resolve_document_path(&root, "notes/../../escape.md").is_err());
+    }
+
+    #[test]
     fn keeps_writing_titles_independent_from_file_names() {
         assert_eq!(
             document_name("2026-09-18_reflections-on-discipline").unwrap(),
@@ -1300,6 +1446,45 @@ mod tests {
             vec!["reflection".to_string(), "work".to_string()]
         );
         assert_eq!(prose_words(&updated), vec!["notes"]);
+    }
+
+    #[test]
+    fn reads_a_closing_fence_that_ends_the_file_without_a_trailing_newline() {
+        // A metadata-only document is the shape that used to lose its tags on both
+        // sides of the app: `front_matter` here and `splitMarkdownDocument` in
+        // src/documentIdentity.ts both have to agree that the closing `---` at
+        // end-of-input really closes the block.
+        assert_eq!(front_matter("---\ntags: [essay]\n---"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\ntags: [essay]\n---\n"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\r\ntags: [essay]\r\n---"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\r\ntags: [essay]\r\n---\r\n"), Some(("tags: [essay]", "")));
+        assert_eq!(
+            document_tags("---\ntags: [essay]\n---"),
+            vec!["essay".to_string()]
+        );
+
+        // A body may follow either form, and the body keeps its own line ending.
+        assert_eq!(
+            front_matter("---\ntags: [essay]\n---\nBody.\n"),
+            Some(("tags: [essay]", "Body.\n"))
+        );
+        assert_eq!(
+            front_matter("---\r\ntags: [essay]\r\n---\r\nBody.\r\n"),
+            Some(("tags: [essay]", "Body.\r\n"))
+        );
+
+        // A `---` that only starts a line inside the metadata is not a closing fence.
+        assert_eq!(front_matter("---\ntags: [a]\n---x"), None);
+        assert_eq!(front_matter("---\n\nJust a rule\n"), None);
+
+        // Retagging edits the existing block rather than prepending a second one.
+        let updated = set_document_tags("---\ntitle: Notes\ntags: [old]\n---", &["work".to_string()]);
+        assert_eq!(
+            updated,
+            "---\ntitle: Notes\ntags:\n  - work\n---\n"
+        );
+        assert_eq!(document_tags(&updated), vec!["work".to_string()]);
+        assert!(updated.contains("title: Notes"));
     }
 
     #[test]
@@ -1460,5 +1645,119 @@ mod tests {
             "both exist, so the stable one wins"
         );
         assert!(legacy_directory.exists(), "the legacy database is left alone");
+    }
+
+    #[test]
+    fn keeps_a_backup_of_the_legacy_database_before_moving_it() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(resolved, stable_directory.join(DATABASE_FILE));
+        assert_eq!(
+            fs::read_to_string(&resolved).unwrap(),
+            "history",
+            "the moved database keeps the history it held"
+        );
+        assert_eq!(
+            fs::read_to_string(database_backup(&resolved)).unwrap(),
+            "history",
+            "the backup is left beside the moved database"
+        );
+    }
+
+    #[test]
+    fn still_opens_the_legacy_database_when_the_move_cannot_complete() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+
+        fs::create_dir_all(&legacy_directory).unwrap();
+        // A non-empty destination cannot be renamed over, so the move fails
+        // while the stable database itself is still missing.
+        fs::create_dir_all(&stable_directory).unwrap();
+        fs::write(stable_directory.join("occupied"), "another app").unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            legacy_directory.join(DATABASE_FILE),
+            "a failed migration must never cost the user their history"
+        );
+        assert_eq!(fs::read_to_string(&resolved).unwrap(), "history");
+    }
+
+    #[test]
+    fn opens_a_healthy_activity_database() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join(DATABASE_FILE);
+        initialize_database(&Connection::open(&path).unwrap()).expect("database schema");
+
+        let database = open_database(&path).expect("a healthy database opens");
+
+        let tables: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'activity_events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1, "the database is still usable after the check");
+    }
+
+    #[test]
+    fn opens_the_brand_new_database_a_first_run_creates() {
+        // The integrity check runs on every open, and on a first run the file
+        // does not exist yet: Connection::open creates a zero-length file that
+        // initialize_database has not touched. A zero-length file is a valid
+        // empty SQLite database, so this must pass -- otherwise the check
+        // would make every new workspace unopenable.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join("nested").join(DATABASE_FILE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let database = open_database(&path).expect("a first run opens an empty database");
+
+        initialize_database(&database).expect("schema applies to the new database");
+        assert!(path.exists(), "the new workspace has its database file");
+    }
+
+    #[test]
+    fn refuses_to_open_a_corrupted_activity_database() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join(DATABASE_FILE);
+        fs::write(&path, "this was never a database").unwrap();
+
+        let error = open_database(&path).expect_err("a corrupt database must be refused");
+
+        assert!(
+            error.contains("corrupted"),
+            "the error must say what is wrong: {error}"
+        );
+        assert!(
+            error.contains(&format!("{DATABASE_FILE}.bak")),
+            "the error must point at the recovery copy: {error}"
+        );
+
+        let backup = database_backup(&path);
+        fs::write(&backup, "history").unwrap();
+        let with_backup = open_database(&path).expect_err("a corrupt database must be refused");
+        assert!(
+            with_backup.contains(&backup.display().to_string()),
+            "the recovery copy must be named exactly: {with_backup}"
+        );
     }
 }
