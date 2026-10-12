@@ -4,7 +4,7 @@ This file tracks user-facing changes. Wrava follows [Semantic
 Versioning](https://semver.org/); the version stays below `1.0.0` while the
 core feature set is still settling.
 
-## Unreleased
+## 0.1.2 - 2026-10-12
 
 ### Added
 
