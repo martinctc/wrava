@@ -97,20 +97,24 @@ function findInstalledLicense(dependency) {
   if (!existsSync(packageDir)) {
     return { error: `package ${dependency.package} is declared as bundled but is not installed` };
   }
-  // Case-insensitive sweep so an unexpected `License.txt` / `LICENSE-MIT` still
-  // resolves instead of silently reporting "licence not found".
+  // Resolve the candidate names against the entries that actually exist. The
+  // candidates differ only in case and extension, and a case-sensitive
+  // filesystem will not open `LICENSE` when the file is named `license`, so
+  // matching the real name is what makes this work on Linux and macOS runners
+  // as well as on Windows.
   let entries = [];
   try {
     entries = readdirSync(packageDir);
   } catch (error) {
     return { error: `could not read node_modules/${dependency.package}: ${error.message}` };
   }
-  const wanted = new Set(dependency.licenseCandidates.map((name) => name.toLowerCase()));
-  const byPreference = [
-    ...dependency.licenseCandidates,
-    ...entries.filter((name) => /^licen[cs]e/i.test(name)).sort(),
-  ];
-  const match = byPreference.find((name) => wanted.has(name.toLowerCase()) || /^licen[cs]e/i.test(name));
+  const byName = new Map(entries.map((name) => [name.toLowerCase(), name]));
+  // The sweep is the fallback, so an unexpected `License.txt` or `LICENSE-MIT`
+  // still resolves instead of silently reporting "licence not found".
+  const match =
+    dependency.licenseCandidates
+      .map((name) => byName.get(name.toLowerCase()))
+      .find(Boolean) ?? entries.filter((name) => /^licen[cs]e/i.test(name)).sort()[0];
   if (!match) return { error: `no licence file found in node_modules/${dependency.package}` };
   const contents = read(path.join("node_modules", dependency.package, match));
   return { path: `node_modules/${dependency.package}/${match}`, contents };
