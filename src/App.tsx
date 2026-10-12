@@ -9,12 +9,17 @@ import { closeHistory } from "@milkdown/kit/prose/history";
 import { joinMarkdownBody, suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
 import { forgetWorkspacePath, isMissingFolderError, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
-import { goalProgress, sortDocuments, weekPace } from "./writingProgress";
+import { sortDocuments, weekPace } from "./writingProgress";
+import { ActivityStrip } from "./ActivityStrip";
+import { AnalyticsPage } from "./AnalyticsPage";
+import { InlineNameEditor } from "./InlineNameEditor";
+import { RichMarkdownEditor } from "./RichMarkdownEditor";
 import { SettingsPanel } from "./SettingsPanel";
 import { SpellingMenu } from "./SpellingMenu";
+import { WelcomePanel } from "./WelcomePanel";
 import { loadDictionary } from "./spellingDictionaries";
 import type { SpellingChecker } from "./spellcheckCore";
-import { sourceSpelling, richSpelling, richSpellingKey, type SpellingOptions, type SpellingRequest } from "./spellingEditors";
+import { sourceSpelling, type SpellingOptions, type SpellingRequest } from "./spellingEditors";
 import {
   DEMO_BANNER,
   chooseWorkspaceFolder,
@@ -28,15 +33,6 @@ import {
   saveDocument as backendSaveDocument,
   setNativeTheme,
 } from "./backend";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import "./App.css";
@@ -485,6 +481,7 @@ function App() {
     () => sortDocuments(workspace?.files ?? [], documentOrder ?? settings.documentOrder),
     [workspace?.files, documentOrder, settings.documentOrder],
   );
+
   const weeklyPace = weekPace(stats, new Date());
   const parsedTags = tagInput
     .split(",")
@@ -606,37 +603,8 @@ function App() {
         </div>
       </header>
 
-      {page === "write" && !focusMode ? (
-        <section className="metric-strip" aria-label="Writing activity">
-          <div className="metric-primary">
-            <MetricCard label="Today" added={stats.todayAdded} net={stats.todayNet}
-              documents={stats.todayDocuments} goal={settings.goals.today} />
-            <MetricCard label="This week" added={stats.weekAdded} net={stats.weekNet}
-              documents={stats.weekDocuments} goal={settings.goals.week}
-              pace={`${weeklyPace.average.toLocaleString()} net words per calendar day on average`}
-              catchup={settings.goals.week > 0 && stats.weekNet < settings.goals.week
-                ? `${Math.ceil((settings.goals.week - stats.weekNet) / weeklyPace.needed).toLocaleString()} per day needed, including today`
-                : undefined} />
-          </div>
-          <details className="more-activity">
-            <summary>Month and year <span>See longer-term activity</span></summary>
-            <div className="metric-secondary">
-              <MetricCard label="This month" added={stats.monthAdded} net={stats.monthNet}
-                documents={stats.monthDocuments} goal={settings.goals.month} />
-              <MetricCard label="This year" added={stats.yearAdded} net={stats.yearNet}
-                documents={stats.yearDocuments} goal={settings.goals.year} />
-            </div>
-          </details>
-        </section>
-      ) : (
-        <div className="metric-strip-compact" aria-label="Writing activity summary">
-          <strong>{stats.todayAdded.toLocaleString()}</strong>
-          <span>words added today</span>
-          <span className={stats.todayNet < 0 ? "negative" : ""}>
-            {stats.todayNet >= 0 ? "+" : ""}{stats.todayNet.toLocaleString()} net growth
-          </span>
-        </div>
-      )}
+      <ActivityStrip stats={stats} settings={settings} pace={weeklyPace}
+        compact={page !== "write" || focusMode} />
 
       {page === "analytics" && analytics ? (
         <AnalyticsPage analytics={analytics} />
@@ -811,43 +779,13 @@ function App() {
                 </div>
               </>
             ) : (
-              <div className="welcome-panel">
-                <div className="welcome-mark">W</div>
-                {restoring ? (
-                  <>
-                    <p className="eyebrow">Reopening your folder</p>
-                    <h1>One moment…</h1>
-                    <p title={restoring}>
-                      Wrava is reopening <strong>{restoring}</strong> and re-reading
-                      your Markdown files.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <p className="eyebrow">Your words, your files</p>
-                    <h1>Make your writing visible.</h1>
-                    <p>
-                      Choose a folder of Markdown files. Wrava will establish a baseline,
-                      then track additions and document growth from every accepted change.
-                    </p>
-                    <button className="primary-button" onClick={chooseWorkspace} disabled={busy}>
-                      Choose writing folder
-                    </button>
-                    {restoreFailed && (
-                      <div>
-                        <button
-                          type="button"
-                          className="text-button restore-fallback"
-                          onClick={forgetWorkspace}
-                          disabled={busy}
-                        >
-                          Stop reopening the last folder
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
+              <WelcomePanel
+                restoring={restoring}
+                restoreFailed={restoreFailed}
+                busy={busy}
+                onChooseWorkspace={chooseWorkspace}
+                onForgetWorkspace={forgetWorkspace}
+              />
             )}
           </section>
         </section>
@@ -929,457 +867,6 @@ function App() {
       )}
     </main>
   );
-}
-
-function InlineNameEditor({ value, display, label, extension = "", heading = false, busy, onRename }: {
-  value: string;
-  display: string;
-  label: string;
-  extension?: string;
-  heading?: boolean;
-  busy: boolean;
-  onRename: (name: string) => Promise<void>;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(value);
-  const [error, setError] = useState("");
-  const titleRef = useRef<HTMLButtonElement>(null);
-  const submitting = useRef(false);
-
-  function cancel() {
-    setEditing(false);
-    setName(value);
-    setError("");
-    requestAnimationFrame(() => titleRef.current?.focus());
-  }
-
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (busy || submitting.current || !name.trim()) return;
-    if ((extension ? name.trim().replace(/\.md$/i, "") : name.trim()) === value) {
-      cancel();
-      return;
-    }
-    submitting.current = true;
-    setError("");
-    try {
-      await onRename(name.trim());
-      cancel();
-    } catch (error) {
-      setError(String(error));
-    } finally {
-      submitting.current = false;
-    }
-  }
-
-  const button = (
-    <button ref={titleRef} className="document-title" disabled={busy} onClick={() => {
-      setName(value);
-      setEditing(true);
-    }} title={`${display} (click to edit ${label.toLowerCase()})`} aria-label={`Edit ${label.toLowerCase()}: ${display}`}>
-      {display}
-    </button>
-  );
-
-  return editing ? (
-    <form className="inline-rename" onSubmit={submit} onKeyDown={(event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!busy) cancel();
-      }
-    }}>
-      <div className="rename-controls">
-        <input
-          aria-label={label}
-          spellCheck={extension ? false : undefined}
-          aria-describedby={error ? `${extension ? "file" : "title"}-rename-error` : undefined}
-          aria-invalid={Boolean(error)}
-          autoFocus
-          required
-          disabled={busy}
-          value={name}
-          onFocus={(event) => event.currentTarget.select()}
-          onChange={(event) => setName(event.currentTarget.value)}
-        />
-        {extension && <span className="rename-extension">{extension}</span>}
-        <button className="icon-button" type="submit" aria-label={`Apply ${label.toLowerCase()}`} title={`Apply ${label.toLowerCase()}`} disabled={busy || !name.trim()}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
-        </button>
-        <button className="icon-button" type="button" onClick={cancel} aria-label="Cancel rename" title="Cancel rename" disabled={busy}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
-        </button>
-      </div>
-      <p className="rename-hint">Enter to apply. Escape to cancel.</p>
-      {error && <p id={`${extension ? "file" : "title"}-rename-error`} className="rename-error" role="alert">{error}</p>}
-    </form>
-  ) : heading ? <h1>{button}</h1> : button;
-}
-
-function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
-  const totalAdded = analytics.daily.reduce((sum, day) => sum + day.wordsAdded, 0);
-  const totalNet = analytics.daily.reduce((sum, day) => sum + day.netChange, 0);
-  const bestDay = analytics.daily.reduce(
-    (best, day) => (day.wordsAdded > best.wordsAdded ? day : best),
-    analytics.daily[0],
-  );
-  const maxDocumentWords = Math.max(
-    1,
-    ...analytics.documents.map((document) => document.wordsAdded),
-  );
-
-  return (
-    <section className="analytics-page">
-      <div className="analytics-heading">
-        <div>
-          <p className="eyebrow">Detailed analytics</p>
-          <h1>Your last 12 weeks</h1>
-          <p>Writing activity calculated from accepted Markdown changes.</p>
-        </div>
-      </div>
-
-      <div className="analytics-summary">
-        <SummaryCard label="Words added" value={totalAdded} detail={`${totalNet >= 0 ? "+" : ""}${totalNet.toLocaleString()} net growth`} />
-        <SummaryCard label="Active days" value={analytics.activeDays} detail={`of ${analytics.daily.length} days`} />
-        <SummaryCard label="Active documents" value={analytics.activeDocuments} detail={`${analytics.documents.length} in the workspace`} />
-        <SummaryCard label="Current corpus" value={analytics.currentWordCount} detail={`${analytics.documents.length} documents`} />
-        <SummaryCard
-          label="Best writing day"
-          value={bestDay?.wordsAdded ?? 0}
-          detail={bestDay ? formatDate(bestDay.date) : "No activity yet"}
-        />
-      </div>
-
-      <div className="analytics-grid">
-        <article className="analytics-card trend-card">
-          <div className="card-heading">
-            <div>
-              <h2>Writing activity</h2>
-              <p>Daily additions and net document growth</p>
-            </div>
-            <span>12 weeks</span>
-          </div>
-          <div className="trend-chart">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={analytics.daily} margin={{ top: 10, right: 12, left: -18, bottom: 0 }}>
-                <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="4 4" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  tickFormatter={formatShortDate}
-                  minTickGap={36}
-                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  yAxisId="words"
-                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  yAxisId="documents"
-                  orientation="right"
-                  allowDecimals={false}
-                  tick={{ fill: "var(--chart-label)", fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip
-                  labelFormatter={(label) => formatDate(String(label))}
-                  contentStyle={{ borderRadius: 10, borderColor: "var(--tooltip-border)", background: "var(--tooltip-background)", color: "var(--tooltip-text)" }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="wordsAdded"
-                  name="Words added"
-                  yAxisId="words"
-                  stroke="var(--chart-added)"
-                  strokeWidth={2.5}
-                  dot={false}
-                  activeDot={{ r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="netChange"
-                  name="Net growth"
-                  yAxisId="words"
-                  stroke="var(--chart-net)"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  dot={false}
-                />
-                <Line
-                  type="stepAfter"
-                  dataKey="activeDocuments"
-                  name="Active documents"
-                  yAxisId="documents"
-                  stroke="var(--chart-documents)"
-                  strokeWidth={1.5}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="chart-legend">
-            <span><i className="legend-added" /> Words added</span>
-            <span><i className="legend-net" /> Net growth</span>
-            <span><i className="legend-documents" /> Active documents</span>
-          </div>
-        </article>
-
-        <article className="analytics-card consistency-card">
-          <div className="card-heading">
-            <div>
-              <h2>Consistency</h2>
-              <p>Each square is one day</p>
-            </div>
-          </div>
-          <div className="activity-grid" aria-label="Writing activity heatmap">
-            {analytics.daily.map((day) => (
-              <span
-                key={day.date}
-                className={`activity-cell level-${activityLevel(day.wordsAdded)}`}
-                title={`${formatDate(day.date)}: ${day.wordsAdded.toLocaleString()} words added`}
-              />
-            ))}
-          </div>
-          <p className="consistency-note">
-            You wrote on <strong>{analytics.activeDays}</strong> of the last 84 days.
-          </p>
-        </article>
-
-        <article className="analytics-card documents-card">
-          <div className="card-heading">
-            <div>
-              <h2>Activity by document</h2>
-              <p>All recorded activity for the current workspace</p>
-            </div>
-          </div>
-          <div className="document-breakdown">
-            {analytics.documents.length ? analytics.documents.map((item) => (
-              <div className="document-row" key={item.path}>
-                <div className="document-row-label">
-                  <strong title={item.path}>{item.path}</strong>
-                  <span>{item.wordsAdded.toLocaleString()} added · {item.currentWordCount.toLocaleString()} current</span>
-                  {item.tags.length > 0 && (
-                    <span className="document-tags">{item.tags.map((tag) => `#${tag}`).join(" ")}</span>
-                  )}
-                </div>
-                <div className="document-bar-track">
-                  <span
-                    className={item.wordsAdded === 0 ? "document-bar zero" : "document-bar"}
-                    style={{ width: `${item.wordsAdded === 0 ? 0 : item.wordsAdded / maxDocumentWords * 100}%` }}
-                  />
-                </div>
-                <span className={item.netChange < 0 ? "document-net negative" : "document-net"}>
-                  {item.netChange >= 0 ? "+" : ""}{item.netChange.toLocaleString()}
-                </span>
-              </div>
-            )) : (
-              <p className="empty-analytics">No documents have been indexed yet.</p>
-            )}
-          </div>
-        </article>
-
-        <article className="analytics-card tags-card">
-          <div className="card-heading">
-            <div>
-              <h2>Activity by tag</h2>
-              <p>Current tags applied to each document</p>
-            </div>
-          </div>
-          <div className="tag-breakdown">
-            {analytics.tags.length ? analytics.tags
-              .slice()
-              .sort((left, right) => right.wordsAdded - left.wordsAdded)
-              .map((tag) => (
-                <div className="tag-row" key={tag.tag}>
-                  <span className="tag-pill">#{tag.tag}</span>
-                  <strong>{tag.wordsAdded.toLocaleString()} words</strong>
-                  <span>{tag.documents} document{tag.documents === 1 ? "" : "s"}</span>
-                </div>
-              )) : (
-                <p className="empty-analytics">Add tags to documents to see topic-level activity.</p>
-              )}
-          </div>
-        </article>
-
-        <article className="analytics-card bigram-card">
-          <div className="card-heading">
-            <div>
-              <h2>Writing patterns</h2>
-              <p>Most frequent two-word pairs · stopwords removed</p>
-            </div>
-          </div>
-          <div className="bigram-breakdown">
-            {analytics.bigrams.length ? analytics.bigrams.map((item) => (
-              <div className="bigram-row" key={item.phrase}>
-                <span className="bigram-phrase">"{item.phrase}"</span>
-                <span className="bigram-count">{item.count}</span>
-              </div>
-            )) : (
-              <p className="empty-analytics">Write more to see common phrases.</p>
-            )}
-          </div>
-        </article>
-      </div>
-    </section>
-  );
-}
-
-function RichMarkdownEditor({
-  markdown,
-  onChange,
-  editorRef,
-  onError,
-  spelling,
-  onSpelling,
-}: {
-  markdown: string;
-  onChange: (markdown: string) => void;
-  editorRef: React.RefObject<Crepe | null>;
-  onError: (message: string) => void;
-  spelling: SpellingOptions;
-  onSpelling: (request: SpellingRequest) => void;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const initialMarkdownRef = useRef(markdown);
-  const onChangeRef = useRef(onChange);
-  onChangeRef.current = onChange;
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-  const spellingRef = useRef(spelling);
-  spellingRef.current = spelling;
-  const onSpellingRef = useRef(onSpelling);
-  onSpellingRef.current = onSpelling;
-
-  useEffect(() => {
-    editorRef.current?.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      view.dispatch(view.state.tr.setMeta(richSpellingKey, "refresh"));
-    });
-  }, [editorRef, spelling]);
-
-  useEffect(() => {
-    if (!rootRef.current) return;
-    let disposed = false;
-
-    const crepe = new Crepe({
-      root: rootRef.current,
-      defaultValue: initialMarkdownRef.current,
-      features: {
-        [Crepe.Feature.CodeMirror]: false,
-        [Crepe.Feature.Latex]: false,
-        [Crepe.Feature.ImageBlock]: false,
-        [Crepe.Feature.BlockEdit]: false,
-        [Crepe.Feature.Table]: false,
-        [Crepe.Feature.TopBar]: true,
-      },
-    });
-    crepe.editor.use(richSpelling(() => spellingRef.current, request => onSpellingRef.current(request)));
-    crepe.on((listener) => {
-      listener.markdownUpdated((_context, nextMarkdown, previousMarkdown) => {
-        if (!disposed && nextMarkdown !== previousMarkdown) {
-          onChangeRef.current(nextMarkdown);
-        }
-      });
-    });
-
-    void crepe.create().then(() => {
-      if (!disposed) editorRef.current = crepe;
-    }).catch((error) => onErrorRef.current(`Could not start the rich editor: ${String(error)}`));
-    return () => {
-      disposed = true;
-      if (editorRef.current === crepe) editorRef.current = null;
-      void crepe.destroy().catch((error) => onErrorRef.current(`Could not close the rich editor: ${String(error)}`));
-    };
-  }, [editorRef]);
-
-  return <div className="rich-editor" ref={rootRef} />;
-}
-
-function MetricCard({
-  label,
-  added,
-  net,
-  documents,
-  goal,
-  pace,
-  catchup,
-}: {
-  label: string;
-  added: number;
-  net: number;
-  documents: number;
-  goal: number;
-  pace?: string;
-  catchup?: string;
-}) {
-  const progress = goalProgress(net, goal);
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong className={net < 0 ? "negative" : ""}>{net >= 0 ? "+" : ""}{net.toLocaleString()} <em>net words</em></strong>
-      {goal > 0 && <>
-        <div className="goal-track" role="progressbar" aria-label={`${label} goal progress`}
-          aria-valuemin={0} aria-valuemax={goal} aria-valuenow={Math.min(goal, Math.max(0, net))}>
-          <span style={{ width: `${progress}%` }} />
-        </div>
-        <small className="goal-caption">{net >= goal ? "Goal reached" : `${Math.max(0, goal - net).toLocaleString()} to go`}
-          {" · "}{goal.toLocaleString()} net words target</small>
-      </>}
-      {pace && <small className="pace-caption">{pace}</small>}
-      {catchup && <small className="pace-caption">{catchup}</small>}
-      <small>{added.toLocaleString()} added</small>
-      <small className="document-count">
-        {documents} active document{documents === 1 ? "" : "s"}
-      </small>
-    </article>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: number;
-  detail: string;
-}) {
-  return (
-    <article className="summary-card">
-      <span>{label}</span>
-      <strong>{value.toLocaleString()}</strong>
-      <small>{detail}</small>
-    </article>
-  );
-}
-
-function formatDate(date: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${date}T00:00:00Z`));
-}
-
-function formatShortDate(date: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    day: "numeric",
-    month: "short",
-    timeZone: "UTC",
-  }).format(new Date(`${date}T00:00:00Z`));
-}
-
-function activityLevel(words: number) {
-  if (words === 0) return 0;
-  if (words < 100) return 1;
-  if (words < 300) return 2;
-  if (words < 600) return 3;
-  return 4;
 }
 
 export default App;
