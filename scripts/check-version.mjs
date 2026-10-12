@@ -9,12 +9,12 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const read = (relative) => readFileSync(path.join(root, relative), "utf8");
 
 function cargoPackageVersion(text) {
-  const match = text.match(/^\[package\][^[]*?\nversion\s*=\s*"([^"]+)"/m);
+  const match = text.match(/^\[package\][^[]*?\r?\nversion\s*=\s*"([^"]+)"/m);
   return match?.[1];
 }
 
 function cargoLockVersion(text, packageName) {
-  const match = text.match(new RegExp(`name = "${packageName}"\\nversion = "([^"]+)"`));
+  const match = text.match(new RegExp(`name = "${packageName}"\\r?\\nversion = "([^"]+)"`));
   return match?.[1];
 }
 

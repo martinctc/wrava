@@ -18,7 +18,10 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 
 ### Workspace
 - **Select folder** — index a folder of Markdown files.
+- **Reopen last folder** — the last used folder is reopened on launch instead of being asked for every time. Only the folder path is remembered, on this device, and never in the browser demo. A Forget control beside the folder path stops reopening it, and a missing folder falls back to the folder prompt.
+- **History survives moves** — renaming or moving a writing folder keeps its activity history. Wrava writes a small `wrava.json` into the folder holding a stable id, and keys its local database by that id instead of the folder path. A copied folder is given its own history rather than sharing one. Deleting `wrava.json` by hand makes that folder look new to Wrava.
 - **Title & filename** — independent H1 title (stored in file) and filename. Filename suggestions use `yyyy-mm-dd_title-slug.md` (max 80 chars by default). Existing files are never renamed.
+- **Search** — the sidebar filter matches document text as well as filenames, so you can find what you wrote rather than only what you named the file. Front matter is not searched, so a query does not match a document merely because it carries a tag.
 - **Document order** — newest filename-date first by default; sidebar toggle reverses to oldest first. Undated files follow dated ones.
 - **Tags** — portable comma-separated tags stored in YAML front matter.
 - **Reconcile** — changes made in other editors are reconciled automatically.
@@ -42,6 +45,7 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - **Trend & consistency** — 12-week writing trend and 84-day heatmap.
 - **Breakdowns** — per-document and per-tag activity (current word count, words added, net change).
 - **Patterns** — common two-word phrase frequency (stopwords removed, no AI or judgment applied) from workspace content.
+- **Export** — export the analytics data as CSV or JSON, or copy the CSV to the clipboard.
 
 ### Data
 - **Baseline** — existing files establish a zero-activity baseline on first index.
@@ -101,6 +105,13 @@ To cut a release:
 Wrava does not upload document contents or activity data. Markdown files remain
 in the selected workspace. Derived activity data is stored in the operating
 system's local application-data directory.
+
+Wrava writes one file into the selected folder, `wrava.json`, so a folder's
+history survives being renamed or moved. It contains a marker naming Wrava as
+its writer, a random identifier, and the folder's own path — never document
+contents or activity data. Wrava only ever creates and updates this file; it
+does not remove it, and it leaves a `wrava.json` belonging to something else
+alone rather than adopting it.
 
 The bundled British and US spellcheck dictionaries run entirely on the device.
 System-default spellchecking follows the host's spelling settings. Appearance,

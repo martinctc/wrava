@@ -14,7 +14,8 @@ import type {
   WorkspaceView,
 } from "./types";
 import { computeBigrams } from "./bigrams";
-import { documentFilename, titleMarkdown } from "./documentIdentity";
+import { documentFilename, splitMarkdownDocument, titleMarkdown } from "./documentIdentity";
+import { normalizeSearchQuery, shouldSearchContent } from "./documentSearch";
 
 export const DEMO_WORKSPACE_ROOT = "Demo workspace (in your browser)";
 
@@ -256,6 +257,23 @@ class DemoStore {
     return { workspace: this.workspace(), document: this.read(fileName) };
   }
 
+  // The demo's answer to the `search_document_content` command: the same
+  // case-insensitive substring test over the same `splitMarkdownDocument`
+  // bodies, so a document is found by what it says in the browser exactly as
+  // it is on the desktop. File names are the sidebar's job on both sides.
+  searchContent(query: string): string[] {
+    const needle = normalizeSearchQuery(query);
+    if (!shouldSearchContent(needle)) return [];
+    const matches: string[] = [];
+    for (const path of this.files()) {
+      const doc = this.documents.get(path);
+      if (doc && splitMarkdownDocument(doc.content).body.toLowerCase().includes(needle)) {
+        matches.push(path);
+      }
+    }
+    return matches;
+  }
+
   analytics(): AnalyticsView {
     const today: DemoDayHistory = {
       date: isoDate(daysAgo(0)),
@@ -341,4 +359,8 @@ export function demoRenameDocument(path: string, name: string): DocumentResult {
 
 export function demoQueryAnalytics(): AnalyticsView {
   return store.analytics();
+}
+
+export function demoSearchDocumentContent(query: string): string[] {
+  return store.searchContent(query);
 }
