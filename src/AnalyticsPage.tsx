@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -7,9 +8,16 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import {
+  analyticsCsvFilename,
+  analyticsJsonFilename,
+  analyticsToCsv,
+  analyticsToJson,
+} from "./analyticsExport.ts";
 import type { AnalyticsView } from "./types";
 
 export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
+  const [exportStatus, setExportStatus] = useState("");
   const totalAdded = analytics.daily.reduce((sum, day) => sum + day.wordsAdded, 0);
   const totalNet = analytics.daily.reduce((sum, day) => sum + day.netChange, 0);
   const bestDay = analytics.daily.reduce(
@@ -21,6 +29,45 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
     ...analytics.documents.map((document) => document.wordsAdded),
   );
 
+  // Serialization lives in analyticsExport.ts so it stays pure and testable; this
+  // is the only DOM-touching half. The blob download path is verified in a normal
+  // browser, but the shipped app runs in Tauri's WebView2, where `<a download>`
+  // may be swallowed by the webview's own download handling rather than writing
+  // the file. The clipboard copy is the fallback for that case, so the data is
+  // never only reachable through a download that may not land.
+  function saveFile(filename: string, contents: string, mimeType: string) {
+    const url = URL.createObjectURL(new Blob([contents], { type: `${mimeType};charset=utf-8` }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadCsv() {
+    const filename = analyticsCsvFilename();
+    saveFile(filename, analyticsToCsv(analytics), "text/csv");
+    setExportStatus(`Requested ${filename}. If nothing downloads, use Copy CSV.`);
+  }
+
+  function downloadJson() {
+    const filename = analyticsJsonFilename();
+    saveFile(filename, analyticsToJson(analytics), "application/json");
+    setExportStatus(`Requested ${filename}. If nothing downloads, the clipboard copy only covers CSV.`);
+  }
+
+  async function copyCsv() {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(analyticsToCsv(analytics));
+      setExportStatus("CSV copied to the clipboard.");
+    } catch {
+      setExportStatus("The clipboard was blocked. Use Export CSV, or open the app in a browser.");
+    }
+  }
+
   return (
     <section className="analytics-page">
       <div className="analytics-heading">
@@ -28,6 +75,12 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
           <p className="eyebrow">Detailed analytics</p>
           <h1>Your last 12 weeks</h1>
           <p>Writing activity calculated from accepted Markdown changes.</p>
+        </div>
+        <div className="analytics-export">
+          <button type="button" className="text-button" onClick={downloadCsv}>Export CSV</button>
+          <button type="button" className="text-button" onClick={copyCsv}>Copy CSV</button>
+          <button type="button" className="text-button" onClick={downloadJson}>Export JSON</button>
+          {exportStatus && <p role="status">{exportStatus}</p>}
         </div>
       </div>
 

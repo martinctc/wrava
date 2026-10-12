@@ -1021,6 +1021,14 @@ button:disabled {
   font-size: 13px;
 }
 
+.analytics-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
 .analytics-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
