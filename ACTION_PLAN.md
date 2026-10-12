@@ -1,4 +1,4 @@
-ACTION PLAN — Remember last workspace folder
+ACTION PLAN — Remember last workspace folder, and the review follow-ups
 
 Goal: reopen the last used writing folder on startup, without regressing startup
 speed, demo behaviour, or existing activity history.
@@ -91,3 +91,95 @@ speed, demo behaviour, or existing activity history.
 - src/App.tsx: mount effect, persist in chooseWorkspace, restoring state,
   "Forget folder" control.
 - src-tauri/src/lib.rs: only if adopting the stable-workspace-id fix from section 5.
+
+11. REVIEW FINDINGS AND HOW THEY WERE RESOLVED
+- Dark mode was broken for the new Forget button: it hard-coded light-mode text,
+  border and focus colours, so its hover state was invisible on the dark
+  sidebar. Now driven by --dark-muted, --dark-border and --dark-accent.
+- Any startup failure permanently forgot the folder. An offline network drive, a
+  sync tool holding a lock or a database error all cleared the preference.
+  isMissingFolderError() now only clears it when the backend reports the folder
+  itself is missing; anything else is kept and retried next launch, with an
+  explicit opt-out on the welcome panel.
+- That classification originally matched substrings of the operating system's
+  message text, which is localised: on a non-English Windows it never matched a
+  folder that really had been deleted, and any unrelated error containing "not a
+  directory" cleared it regardless. open_workspace now returns a code beside the
+  message, derived from the underlying io::ErrorKind, and the frontend reads the
+  code instead of the wording.
+- A dead error path: the failure message from saveWorkspacePath was overwritten by
+  the success status one line later. The two are now composed into one status.
+- npm test failed on master. scripts/check-version.mjs matched
+  `name = "wrava"\nversion = "..."` in Cargo.lock, but Cargo.toml and Cargo.lock
+  are CRLF, so the literal \n never matched and the Cargo package version was
+  reported as missing. The patterns now use \r?\n. cargoPackageVersion only passed
+  by accident (its [^[]*? happened to consume the \r) and is made explicit too.
+- No workflow ran any test: both existing workflows only built while the PR
+  template asked contributors to confirm the suites by hand. Added a Test
+  workflow on pull requests, pushes to master and manual dispatch.
+- The new CI caught a bug in the new licence check on its first run.
+  scripts/check-licenses.mjs read node_modules/dictionary-en/LICENSE while the
+  package ships `license`. That resolved on the case-insensitive filesystem it
+  was written on and failed with ENOENT on the Linux runner. Candidates are now
+  resolved against the directory entries that actually exist; three of the four
+  bundled packages ship a lowercase `license` and only is-buffer ships an
+  uppercase LICENSE. Worth remembering as the reason the licence check gets a
+  Linux job rather than a Windows one.
+- read_identity accepted any wrava.json carrying a non-empty id, so an unrelated
+  program using the same filename would have its id adopted and the activity
+  database migrated onto it. Identities now carry a marker field Wrava writes,
+  and `deny_unknown_fields` rejects anything carrying further keys, which keeps
+  the bare {id, root} written by an earlier build working. Those are stamped with
+  the marker the first time the folder is refreshed, so the upgrade needs no
+  second pass.
+
+12. DESIGN DECISIONS FOR THE PART 2 WORK
+- The front matter fix lives in the join, not the split. withWritingTitle already
+  guarded this exact hazard by inserting a missing newline; the editor join sites
+  did not. A single joinMarkdownBody helper is now shared by all three join sites
+  so the separator cannot be re-derived per call site. splitMarkdownDocument is
+  deliberately unchanged: normalising the fence there would contradict the
+  round-trip contract the characterisation suite pins.
+- Search parity: the demo backend and the Rust command share the same two-character
+  floor and the same case-insensitive body match, so they cannot disagree. The
+  listing and the search share one walker, so they cannot drift on which files are
+  visible.
+- Search races: results carry the query that produced them and are only accepted
+  while that query is still in the box, so a slow response cannot answer a phrase
+  the user has typed past. While a search is pending the sidebar shows filename
+  matches only — briefly incomplete rather than wrong.
+- Decomposition boundary: only presentational leaves were extracted. The sidebar,
+  topbar and document header take 9–15 props each and would have required context
+  or a reducer, which the project has no other use for. Passing props is the
+  better trade until there is a reason not to.
+- Path hardening: traversal is still decided per component, so legitimate names
+  such as draft..notes.md keep working. A textual check for .. would reject them
+  and was explicitly rejected.
+
+13. KNOWN ISSUES LEFT OPEN (none covered by a test)
+- The browser regression harness still does not run in CI. It is the only real
+  UI coverage, and it now carries the content-search assertions. It needs
+  playwright-core plus a browser download, which is why it is excluded from the
+  Test workflow rather than included. Worth doing next.
+- The CSV export uses # section markers. The four datasets have incompatible
+  columns, so the file stacks five sections separated by "# <title>" lines. Those
+  markers are not valid CSV data records: a naive csv.DictReader trips on them,
+  and Excel may show them as junk rows. Emitting one file per dataset, or a
+  single wide table, would trade away the sectioning. The parsing contract is
+  documented at the top of src/analyticsExport.ts.
+- The CSV export has no formula-injection guard. A document path or two-word
+  phrase beginning with =, +, - or @ will execute as a formula when the file is
+  opened in Excel. This was left unmitigated on purpose — prefix-escaping would
+  break the round-trip fidelity the tests assert and would silently corrupt real
+  data — but it is a real risk and needs a decision.
+- The blob download is verified in Chromium, but the shipped app runs in Tauri's
+  WebView2, where a download may be intercepted by the webview rather than
+  written to disk. That path is unverified. The clipboard copy exists as a
+  fallback and the status line says so when a download does not appear.
+- Startup runs reconcile() on every launch, which re-reads every Markdown file. A
+  restoring state is shown so this does not look like a hang, but large folders
+  may still be slow.
+- Scope: a single remembered folder. A recent-folders list is deliberately out of
+  scope for now.
+- cargo fmt --check reports 15 pre-existing formatting differences in lib.rs
+  that predate this work and were left alone.
