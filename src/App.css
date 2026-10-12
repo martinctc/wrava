@@ -1269,6 +1269,15 @@ button:disabled {
   color: #6b7566;
   font-weight: 700;
   font-size: 12px;
+  position: relative;
+}
+
+.bigram-count::after {
+  content: " occurrences";
+  font-size: 10px;
+  color: #9aa094;
+  margin-left: 2px;
+  font-weight: 400;
 }
 
 .bigram-card {

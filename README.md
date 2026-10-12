@@ -16,60 +16,36 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 
 ## Current vertical slice
 
-- Select and index a folder of Markdown files.
-- Give your writing its own title, stored as the first Markdown H1.
-  New files suggest `yyyy-mm-dd_title-slug.md`, capped at 80 characters by default, including
-  the date and extension. You can override this before creating the file.
-- Edit the writing title or the smaller filename beneath it independently.
-  Enter applies the change, Escape cancels. Title edits are saved with your
-  writing, while filename changes are immediate. Neither renames the other.
-  Existing files are never automatically renamed.
-- Switch Light/Dark directly with the sun/moon icon beside Settings.
-  Open Settings for appearance, autosave, editor text size,
-  spellcheck language, and filename preferences. Settings are remembered on
-  this device. Existing theme preferences are carried forward.
-- Autosave is on by default and saves writing and tags after a two-second
-  pause. Turn it off in Settings to save manually. Save and Ctrl+S still work
-  immediately. Saving preserves the editor's cursor and undo history.
-  A failed save keeps your draft and shows an error with a manual retry.
-  The browser demo still saves only in memory, so reloading clears its writing.
-- Adjust editor text size from 12 to 28 px in Settings (16 px by default).
-  Both editors use the same size, without enlarging the rest of the interface.
-- Spellcheck defaults to your Windows/browser settings. Choose British
-  English (-ise spellings), US English, or Off. The explicit English options
-  use bundled offline dictionaries in both the rich and Markdown editors,
-  rather than relying on WebView2's system dictionary.
-- Right-click an underlined word or place the cursor inside it and press
-  Alt+Enter to see spelling suggestions. Corrections are opt-in and undoable.
-  Code, Markdown front matter, URLs, email addresses and long non-prose tokens
-  are excluded from the bundled checks.
-- Filename preferences control the date prefix and maximum generated length
-  (20–120 characters, 80 by default), with a live example. Only future
-  suggestions change, never existing files or manually chosen names.
-- Write in a WYSIWYG-style rich editor while saving ordinary Markdown.
-- Switch to a complete Markdown source editor when direct control is needed.
-- Use the focus icon beside the editor controls for more writing space.
-  Press Escape to leave focus mode. Focus and Analytics use a compact activity
-  summary instead of reserving space for the Write page's metric cards.
-- Apply H1, H2, H3, bold, italic, underline, and link formatting.
-- Add portable comma-separated tags stored in YAML front matter.
-- Save files through the native application core.
-- Reconcile changes made in other editors.
-- Record words added, words deleted, and net document growth in SQLite.
-- Show activity for today, this week, this month, and this year.
-- Set optional daily, weekly, monthly and yearly net-word-growth goals in
-  Settings (0 disables a goal). The Write view shows progress for today and
-  this week, including average net words per calendar day and the daily pace
-  needed to reach a weekly goal. Expand Month and year for longer-term totals.
-  Negative net totals remain visible, while progress starts at zero.
-- List dated documents newest first by default, with a sidebar control to
-  reverse the filename-date order. Undated documents follow dated ones.
-- Show the number of active documents alongside word activity.
-- Explore a 12-week activity trend, consistency heatmap, per-document and
-  per-tag breakdowns, and common two-word phrase frequency on the detailed
-  analytics page.
+### Workspace
+- **Select folder** — index a folder of Markdown files.
+- **Title & filename** — independent H1 title (stored in file) and filename. Filename suggestions use `yyyy-mm-dd_title-slug.md` (max 80 chars by default). Existing files are never renamed.
+- **Document order** — newest filename-date first by default; sidebar toggle reverses to oldest first. Undated files follow dated ones.
+- **Tags** — portable comma-separated tags stored in YAML front matter.
+- **Reconcile** — changes made in other editors are reconciled automatically.
 
-Existing files establish a zero-activity baseline when first indexed.
+### Editor
+- **Rich editor** — WYSIWYG editing that writes ordinary Markdown.
+- **Source editor** — full Markdown source control when needed.
+- **Formatting** — H1, H2, H3, bold, italic, underline, and links.
+- **Focus mode** — reclaim screen space via the icon beside editor controls; press Escape to exit. Analytics and Focus use a compact activity summary.
+
+### Settings
+- **Appearance** — instant Light/Dark switch; Settings panel remembers choices per device.
+- **Autosave** — saves writing and tags after a 2-second pause (default on). Manual save and Ctrl+S work immediately. Failed saves show a retry error. (Demo saves only in memory; reload clears it.)
+- **Editor size** — text-size slider from 12 to 28 px (16 px default) affects both editors only.
+- **Spellcheck** — defaults to system settings; choose British English (`-ise`), US English, or Off. Bundled offline dictionaries exclude code, front matter, URLs, emails, and long non-prose tokens. Right-click or Alt+Enter for suggestions; corrections are opt-in and undoable.
+- **Filename preferences** — control date prefix and max generated length (20–120 chars, 80 default) with a live example. Only future suggestions change.
+
+### Analytics
+- **Activity totals** — today, this week, this month, and this year; includes net document growth.
+- **Goals** — optional daily/weekly/monthly/yearly net-word targets (0 disables). Progress bar shows pace needed, including average words per calendar day and daily catch-up rate for weekly goals. Negative totals stay visible; progress starts at zero.
+- **Trend & consistency** — 12-week writing trend and 84-day heatmap.
+- **Breakdowns** — per-document and per-tag activity (current word count, words added, net change).
+- **Patterns** — common two-word phrase frequency (stopwords removed, no AI or judgment applied) from workspace content.
+
+### Data
+- **Baseline** — existing files establish a zero-activity baseline on first index.
+- **Storage** — word additions/deletions and net growth recorded in SQLite; active document count shown alongside activity.
 
 ## Development
 
