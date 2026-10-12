@@ -110,8 +110,8 @@ Wrava writes one file into the selected folder, `wrava.json`, so a folder's
 history survives being renamed or moved. It contains a marker naming Wrava as
 its writer, a random identifier, and the folder's own path — never document
 contents or activity data. Wrava only ever creates and updates this file; it
-does not remove it, and it ignores a `wrava.json` that does not carry its
-marker rather than adopting one that belongs to something else.
+does not remove it, and it leaves a `wrava.json` belonging to something else
+alone rather than adopting it.
 
 The bundled British and US spellcheck dictionaries run entirely on the device.
 System-default spellchecking follows the host's spelling settings. Appearance,

@@ -1152,18 +1152,38 @@ fn yaml_tag(value: &str) -> String {
     }
 }
 
+/// `deny_unknown_fields` is doing half the work here: any `wrava.json` carrying
+/// keys beyond these three fails to parse and is never adopted, whatever it
+/// calls itself.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkspaceIdentity {
-    /// Marks the file as Wrava's own. Its absence means the file belongs to
-    /// something else, whatever else it happens to contain.
-    written_by: String,
+    /// Marks the file as Wrava's own. Absent from identities written before the
+    /// marker existed, which are still honoured and then rewritten with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    written_by: Option<String>,
     id: String,
     root: String,
 }
 
+impl WorkspaceIdentity {
+    /// Whether this file is one Wrava wrote, or the bare `{id, root}` an
+    /// earlier build wrote.
+    ///
+    /// Accepting the markerless shape keeps a folder that was opened by a
+    /// pre-release build attached to its activity history instead of silently
+    /// dropping back to path-keying. The marker still does the real work: it is
+    /// what distinguishes this from a file belonging to another program, and
+    /// the next refresh rewrites the identity carrying it.
+    fn is_recognised(&self) -> bool {
+        !self.id.trim().is_empty()
+            && matches!(self.written_by.as_deref(), None | Some(IDENTITY_MARKER))
+    }
+}
+
 fn new_identity(root: &str) -> WorkspaceIdentity {
     WorkspaceIdentity {
-        written_by: IDENTITY_MARKER.to_string(),
+        written_by: Some(IDENTITY_MARKER.to_string()),
         id: new_workspace_id(),
         root: root.to_string(),
     }
@@ -1185,15 +1205,12 @@ fn read_identity(root: &Path) -> IdentityFile {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => IdentityFile::Missing,
         Err(_) => IdentityFile::Unrecognised,
         Ok(contents) => match serde_json::from_str::<WorkspaceIdentity>(&contents) {
-            // Only a file Wrava wrote counts. Without this check any unrelated
-            // `wrava.json` that happened to carry an `id` field would be taken
-            // as an identity, and the activity database would be migrated onto
-            // it — a surprising outcome for a file the app did not write.
-            Ok(identity)
-                if identity.written_by == IDENTITY_MARKER && !identity.id.trim().is_empty() =>
-            {
-                IdentityFile::Recognised(identity)
-            }
+            // Only a file Wrava wrote counts, or the bare one an earlier build
+            // wrote. Without this check any unrelated `wrava.json` that happened
+            // to carry an `id` field would be taken as an identity, and the
+            // activity database would be migrated onto it — a surprising outcome
+            // for a file the app did not write.
+            Ok(identity) if identity.is_recognised() => IdentityFile::Recognised(identity),
             _ => IdentityFile::Unrecognised,
         },
     }
@@ -1238,18 +1255,20 @@ fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
                 // The recorded folder is gone: this is the same folder, moved.
                 // The id is kept, so the history follows it.
                 _ => {
-                    if existing.root != stored_root {
-                        let refreshed = WorkspaceIdentity {
-                            written_by: existing.written_by.clone(),
-                            id: existing.id.clone(),
-                            root: stored_root.clone(),
-                        };
-                        let _ = write_identity(root, &refreshed, true);
+                    // An identity written before the marker existed is stamped
+                    // with it here, so the upgrade happens the first time the
+                    // folder is moved and never has to be reasoned about again.
+                    let marked = WorkspaceIdentity {
+                        written_by: Some(IDENTITY_MARKER.to_string()),
+                        id: existing.id.clone(),
+                        root: stored_root.clone(),
+                    };
+                    if existing.root != stored_root || existing.written_by.is_none() {
+                        let _ = write_identity(root, &marked, true);
                     }
                     Some(WorkspaceIdentity {
-                        written_by: existing.written_by,
-                        id: existing.id,
                         root: stored_root,
+                        ..marked
                     })
                 }
             }
@@ -1763,11 +1782,70 @@ mod tests {
 
         let identity = ensure_identity(&root).expect("identity written");
 
-        assert_eq!(identity.written_by, IDENTITY_MARKER);
+        assert_eq!(identity.written_by.as_deref(), Some(IDENTITY_MARKER));
         let stored: WorkspaceIdentity =
             serde_json::from_str(&fs::read_to_string(identity_path(&root)).unwrap()).unwrap();
-        assert_eq!(stored.written_by, IDENTITY_MARKER);
+        assert_eq!(stored.written_by.as_deref(), Some(IDENTITY_MARKER));
         assert_eq!(stored.id, identity.id);
+    }
+
+    #[test]
+    fn honours_an_identity_written_before_the_marker_existed() {
+        // A folder opened by a pre-release build carries a bare {id, root}. It
+        // must keep its history rather than silently dropping back to a
+        // path-derived key, which is what rejecting it outright would cause.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let legacy = WorkspaceIdentity {
+            written_by: None,
+            id: "an-id-from-an-earlier-build".to_string(),
+            root: display_root(&root),
+        };
+        fs::write(
+            identity_path(&root),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+
+        let kept = ensure_identity(&root).expect("a markerless identity is still ours");
+
+        assert_eq!(kept.id, legacy.id, "the folder keeps its identity");
+    }
+
+    #[test]
+    fn upgrades_a_markerless_identity_when_it_next_refreshes() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        // A recorded location that no longer exists is what a moved folder looks
+        // like, and is what triggers the refresh that rewrites the file.
+        let legacy = WorkspaceIdentity {
+            written_by: None,
+            id: "an-id-from-an-earlier-build".to_string(),
+            root: directory
+                .path()
+                .join("somewhere-it-used-to-be")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        fs::write(
+            identity_path(&root),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+
+        ensure_identity(&root).expect("a markerless identity is still ours");
+
+        let stored: WorkspaceIdentity =
+            serde_json::from_str(&fs::read_to_string(identity_path(&root)).unwrap()).unwrap();
+        assert_eq!(
+            stored.written_by.as_deref(),
+            Some(IDENTITY_MARKER),
+            "the next refresh leaves the file marked as ours"
+        );
+        assert_eq!(
+            stored.id, legacy.id,
+            "the id is not disturbed by the upgrade"
+        );
     }
 
     #[test]
