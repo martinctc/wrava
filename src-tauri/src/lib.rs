@@ -19,6 +19,9 @@ use walkdir::{DirEntry, WalkDir};
 /// Written into the writing folder itself. It holds the stable identity that
 /// keeps activity history attached to a folder across renames and moves.
 const IDENTITY_FILE: &str = "wrava.json";
+/// Written into every identity Wrava creates, so a `wrava.json` belonging to
+/// some other program is never mistaken for one of ours.
+const IDENTITY_MARKER: &str = "wrava-workspace";
 const DATABASE_FILE: &str = "wrava.sqlite3";
 
 #[derive(Default)]
@@ -1107,8 +1110,19 @@ fn yaml_tag(value: &str) -> String {
 
 #[derive(Serialize, Deserialize)]
 struct WorkspaceIdentity {
+    /// Marks the file as Wrava's own. Its absence means the file belongs to
+    /// something else, whatever else it happens to contain.
+    written_by: String,
     id: String,
     root: String,
+}
+
+fn new_identity(root: &str) -> WorkspaceIdentity {
+    WorkspaceIdentity {
+        written_by: IDENTITY_MARKER.to_string(),
+        id: new_workspace_id(),
+        root: root.to_string(),
+    }
 }
 
 enum IdentityFile {
@@ -1127,7 +1141,15 @@ fn read_identity(root: &Path) -> IdentityFile {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => IdentityFile::Missing,
         Err(_) => IdentityFile::Unrecognised,
         Ok(contents) => match serde_json::from_str::<WorkspaceIdentity>(&contents) {
-            Ok(identity) if !identity.id.trim().is_empty() => IdentityFile::Recognised(identity),
+            // Only a file Wrava wrote counts. Without this check any unrelated
+            // `wrava.json` that happened to carry an `id` field would be taken
+            // as an identity, and the activity database would be migrated onto
+            // it — a surprising outcome for a file the app did not write.
+            Ok(identity)
+                if identity.written_by == IDENTITY_MARKER && !identity.id.trim().is_empty() =>
+            {
+                IdentityFile::Recognised(identity)
+            }
             _ => IdentityFile::Unrecognised,
         },
     }
@@ -1154,10 +1176,7 @@ fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
     match read_identity(root) {
         IdentityFile::Unrecognised => None,
         IdentityFile::Missing => {
-            let identity = WorkspaceIdentity {
-                id: new_workspace_id(),
-                root: stored_root,
-            };
+            let identity = new_identity(&stored_root);
             write_identity(root, &identity, false)?;
             Some(identity)
         }
@@ -1168,10 +1187,7 @@ fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
                 // one is a copy. Give it its own history rather than merging two
                 // folders into a single activity record.
                 Some(recorded) if !same_path(&recorded, root) => {
-                    let identity = WorkspaceIdentity {
-                        id: new_workspace_id(),
-                        root: stored_root,
-                    };
+                    let identity = new_identity(&stored_root);
                     write_identity(root, &identity, true)?;
                     Some(identity)
                 }
@@ -1180,12 +1196,14 @@ fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
                 _ => {
                     if existing.root != stored_root {
                         let refreshed = WorkspaceIdentity {
+                            written_by: existing.written_by.clone(),
                             id: existing.id.clone(),
                             root: stored_root.clone(),
                         };
                         let _ = write_identity(root, &refreshed, true);
                     }
                     Some(WorkspaceIdentity {
+                        written_by: existing.written_by,
                         id: existing.id,
                         root: stored_root,
                     })
@@ -1648,6 +1666,7 @@ mod tests {
         // A copied folder carries the same wrava.json, still naming the original.
         let copy_root = fs::canonicalize(&copy_directory).unwrap();
         let carried = serde_json::to_string(&WorkspaceIdentity {
+            written_by: original.written_by.clone(),
             id: original.id.clone(),
             root: display_root(&original_root),
         })
@@ -1669,6 +1688,42 @@ mod tests {
 
         assert!(ensure_identity(&root).is_none());
         assert_eq!(fs::read_to_string(identity_path(&root)).unwrap(), contents);
+    }
+
+    #[test]
+    fn ignores_an_identity_shaped_file_that_wrava_did_not_write() {
+        // A different program may well use a file called wrava.json. Carrying an
+        // `id` is not enough to make it ours: without the marker the folder falls
+        // back to the path-derived key, rather than migrating the activity
+        // database onto an id somebody else chose.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let contents = format!(
+            "{{\"id\":\"not-ours\",\"root\":{:?},\"project\":\"someone elses file\"}}\n",
+            display_root(&root)
+        );
+        fs::write(identity_path(&root), &contents).unwrap();
+
+        assert!(ensure_identity(&root).is_none());
+        assert_eq!(
+            fs::read_to_string(identity_path(&root)).unwrap(),
+            contents,
+            "a foreign file is never rewritten"
+        );
+    }
+
+    #[test]
+    fn writes_the_marker_into_the_identity_it_creates() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let identity = ensure_identity(&root).expect("identity written");
+
+        assert_eq!(identity.written_by, IDENTITY_MARKER);
+        let stored: WorkspaceIdentity =
+            serde_json::from_str(&fs::read_to_string(identity_path(&root)).unwrap()).unwrap();
+        assert_eq!(stored.written_by, IDENTITY_MARKER);
+        assert_eq!(stored.id, identity.id);
     }
 
     #[test]
