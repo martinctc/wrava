@@ -17,7 +17,8 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
         "second.md": { path: "second.md", content: "# Second\n\nOther writing.\n", tags: [], wordCount: 3 },
       };
       const workspace = { root: "C:\\Writing", files: Object.keys(docs), stats };
-      window.testStorage = { docs, workspace, calls: [], delay: 0, fail: false, active: 0, maxActive: 0 };
+      window.testStorage = { docs, workspace, calls: [], delay: 0, fail: false, active: 0, maxActive: 0,
+        searches: [], searchDelays: {} };
       window.__TAURI_INTERNALS__ = {
         metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
         invoke: async (command, args) => {
@@ -25,6 +26,18 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
           if (command === "plugin:dialog|open") return workspace.root;
           if (command === "open_workspace" || command === "refresh_workspace") return structuredClone(workspace);
           if (command === "read_document") return structuredClone(docs[args.path]);
+          if (command === "search_document_content") {
+            // Mirrors the Rust command: file names are the sidebar's job, only
+            // the body is searched, and front matter is not something a writer wrote.
+            const test = window.testStorage;
+            test.searches.push(args.query);
+            await new Promise(resolve => setTimeout(resolve, test.searchDelays[args.query] ?? 0));
+            const query = String(args.query).toLowerCase().trim();
+            if (query.length < 2) return [];
+            return Object.values(docs)
+              .filter(doc => doc.content.replace(/^---\n[\s\S]*?\n---\n/, "").toLowerCase().includes(query))
+              .map(doc => doc.path);
+          }
           if (command === "save_document") {
             const test = window.testStorage;
             test.calls.push({ ...args, time: performance.now() });
@@ -241,6 +254,44 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
       await page.screenshot({ path: require("node:path").join(process.env.WRAVA_SCREENSHOT_DIR, "wrava-writing-controls-narrow.png") });
     }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+
+    // Document search covers what a document says, not only what it is called.
+    const search = page.locator(".document-search input");
+    assert.equal(await page.locator(".file-button").count(), 2, "no query lists every document");
+    await search.fill("second");
+    await page.locator(".file-button").filter({ hasText: "second.md" }).waitFor();
+    assert.equal(await page.locator(".file-button").count(), 1, "a file name still matches on its own");
+    await search.fill("original");
+    await page.locator(".file-button").filter({ hasText: "first.md" }).waitFor();
+    assert.deepEqual(
+      await page.locator(".file-button").allInnerTexts().then(lines => lines.map(line => line.replace("¶", "").trim())),
+      ["first.md"],
+      "a document is found by its text although its name says nothing of the sort");
+    await search.fill("new-tag");
+    await page.locator(".empty-sidebar").filter({ hasText: "No matching documents" }).waitFor();
+    assert.equal(
+      await page.locator(".file-button").count(), 0,
+      "front matter is metadata, so the tag first.md carries is not a match");
+    // A slow response to a phrase the user has already replaced must never
+    // reach the sidebar: "original" is answered only after "zzz" has been, so
+    // it is the later of the two answers and the stale one.
+    await page.evaluate(() => {
+      window.testStorage.searches = [];
+      window.testStorage.searchDelays = { original: 900 };
+    });
+    await search.fill("original");
+    await page.waitForTimeout(400);
+    await search.fill("zzz");
+    await page.waitForTimeout(1800);
+    assert.deepEqual(
+      await page.evaluate(() => window.testStorage.searches), ["original", "zzz"],
+      "the replaced phrase was really searched for, and really answered late");
+    assert.equal(await page.locator(".file-button").count(), 0, "a stale search result is discarded");
+    await page.evaluate(() => { window.testStorage.searchDelays = {}; });
+    await search.fill("");
+    await page.locator(".file-button").filter({ hasText: "second.md" }).waitFor();
+    assert.equal(await page.locator(".file-button").count(), 2, "an empty query restores the full list");
+
     assert.deepEqual(errors, []);
     const demo = await browser.newPage();
     demo.on("pageerror", error => errors.push(error.message));
@@ -264,8 +315,22 @@ const { chromium } = require(process.env.WRAVA_PLAYWRIGHT || "playwright-core");
     await demo.locator(".file-button").nth(1).click();
     await demo.locator(".file-button").first().click();
     assert.match(await demo.locator(".cm-content").innerText(), /Autosave in the browser demo/);
+
+    // The same search, through the in-browser demo backend rather than the mocked
+    // IPC: a body-only hit is found, and a tag a document carries is not.
+    const demoSearch = demo.locator(".document-search input");
+    await demoSearch.fill("daughter");
+    await demo.locator(".file-button").filter({ hasText: "2026-09-15 Novel outline" }).waitFor();
+    assert.equal(await demo.locator(".file-button").count(), 1, "the demo finds a document by its text");
+    await demoSearch.fill("reading");
+    await demo.locator(".empty-sidebar").filter({ hasText: "No matching documents" }).waitFor();
+    assert.equal(await demo.locator(".file-button").count(), 0, "a demo document's tag is not a match");
+    await demoSearch.fill("");
+    await demo.locator(".file-button").filter({ hasText: "2026-09-10 Morning pages" }).waitFor();
+    assert.equal(await demo.locator(".file-button").count(), 4, "an empty query restores the demo list");
+
     assert.deepEqual(errors, []);
-    console.log("PASS: writing controls, goals, dashboard hierarchy, document ordering and persistence");
+    console.log("PASS: writing controls, goals, dashboard hierarchy, document ordering, document content search and persistence");
   } finally {
     await browser.close();
   }

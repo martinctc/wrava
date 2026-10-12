@@ -7,6 +7,12 @@ import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
 import { joinMarkdownBody, suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
+import {
+  DOCUMENT_SEARCH_DEBOUNCE_MS,
+  filterDocuments,
+  normalizeSearchQuery,
+  shouldSearchContent,
+} from "./documentSearch";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
 import { forgetWorkspacePath, isMissingFolderError, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
 import { sortDocuments, weekPace } from "./writingProgress";
@@ -31,6 +37,7 @@ import {
   refreshWorkspace as backendRefreshWorkspace,
   renameDocument as backendRenameDocument,
   saveDocument as backendSaveDocument,
+  searchDocumentContent,
   setNativeTheme,
 } from "./backend";
 import "@milkdown/crepe/theme/common/style.css";
@@ -70,6 +77,11 @@ function App() {
   const [savedContent, setSavedContent] = useState("");
   const [tagInput, setTagInput] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
+  // The documents the backend found by content, and the query that produced
+  // them. Both are needed: a response is only allowed to answer the query that
+  // asked for it, so the sidebar never shows hits for a phrase the box no
+  // longer holds.
+  const [contentSearch, setContentSearch] = useState<{ query: string; paths: string[] } | null>(null);
   const [documentOrder, setDocumentOrder] = useState<Settings["documentOrder"] | null>(null);
   const [editorMode, setEditorMode] = useState<"rich" | "source">("rich");
   const [focusMode, setFocusMode] = useState(false);
@@ -481,6 +493,40 @@ function App() {
     () => sortDocuments(workspace?.files ?? [], documentOrder ?? settings.documentOrder),
     [workspace?.files, documentOrder, settings.documentOrder],
   );
+  // Content hits answer for one query at a time. A query too short to be worth
+  // walking the workspace is answered by file names alone, and an empty one by
+  // neither, which restores the unfiltered list.
+  const searchQuery = normalizeSearchQuery(documentSearch);
+  const contentMatches = useMemo(() => {
+    if (!shouldSearchContent(searchQuery)) return [];
+    return contentSearch?.query === searchQuery ? contentSearch.paths : [];
+  }, [contentSearch, searchQuery]);
+  const matchingFiles = useMemo(
+    () => filterDocuments(orderedFiles, searchQuery, contentMatches),
+    [orderedFiles, searchQuery, contentMatches],
+  );
+
+  // Searching the workspace reads every document in it, so the input rests
+  // first. The guard is the same one the dictionary load uses: a keystroke
+  // cancels the pending search, and a response that arrives anyway is dropped
+  // rather than allowed to answer a query the user has moved on from.
+  useEffect(() => {
+    if (!workspace || !shouldSearchContent(searchQuery)) {
+      setContentSearch(null);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void searchDocumentContent(searchQuery).then(paths => {
+        if (active) setContentSearch({ query: searchQuery, paths });
+      }).catch(error => {
+        if (!active) return;
+        setContentSearch({ query: searchQuery, paths: [] });
+        setStatus(`Could not search this folder: ${String(error)}. File names still match.`);
+      });
+    }, DOCUMENT_SEARCH_DEBOUNCE_MS);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [searchQuery, workspace?.files]);
 
   const weeklyPace = weekPace(stats, new Date());
   const parsedTags = tagInput
@@ -651,9 +697,7 @@ function App() {
                   />
                 </label>
                 <nav className="file-list" aria-label="Markdown documents">
-                  {orderedFiles
-                    .filter((path) => path.toLowerCase().includes(documentSearch.toLowerCase().trim()))
-                    .map((path) => (
+                  {matchingFiles.map((path) => (
                     <button
                       className={document?.path === path ? "file-button active" : "file-button"}
                       key={path}
@@ -664,9 +708,7 @@ function App() {
                       <span>{path}</span>
                     </button>
                   ))}
-                  {!workspace.files.some((path) =>
-                    path.toLowerCase().includes(documentSearch.toLowerCase().trim()),
-                  ) && (
+                  {!matchingFiles.length && (
                     <p className="empty-sidebar">No matching documents.</p>
                   )}
                 </nav>

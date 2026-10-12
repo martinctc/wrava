@@ -323,6 +323,15 @@ fn query_analytics(state: State<AppState>) -> Result<AnalyticsView, String> {
     with_workspace(&state, |workspace| analytics_view(&workspace.database))
 }
 
+/// Finds documents whose text contains `query`, so a writer can look for what
+/// they wrote rather than only for what they named the file. File-name
+/// matching stays in the sidebar, which already has every path in hand; this
+/// walks the workspace for the half the frontend cannot see.
+#[tauri::command]
+fn search_document_content(state: State<AppState>, query: String) -> Result<Vec<String>, String> {
+    with_workspace(&state, |workspace| search_content(&workspace.root, &query))
+}
+
 fn with_workspace<T>(
     state: &State<AppState>,
     operation: impl FnOnce(&mut Workspace) -> Result<T, String>,
@@ -727,6 +736,23 @@ fn strip_front_matter(markdown: &str) -> &str {
 }
 
 fn markdown_files(root: &Path) -> Result<Vec<String>, String> {
+    Ok(markdown_entries(root)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// Every visible Markdown document, as the relative path the app shows and a
+/// full path to read. Both the folder listing and the content search walk the
+/// workspace exactly once and in exactly one way: the same `WalkDir`, the same
+/// `visible_entry`, the same `.md` test, the same ordering.
+///
+/// The relative path is derived from a path the walker itself produced beneath
+/// `root`, so it carries no `ParentDir` or prefix component and always ends in
+/// `.md` — it is exactly what `resolve_document_path` accepts, and it is the
+/// same string the sidebar already sends back to open the document. Nothing
+/// here re-decides what a path may be.
+fn markdown_entries(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root)
         .follow_links(false)
@@ -741,12 +767,16 @@ fn markdown_files(root: &Path) -> Result<Vec<String>, String> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
         {
             let relative = entry.path().strip_prefix(root).map_err(display_error)?;
-            files.push(relative.to_string_lossy().replace('\\', "/"));
+            files.push((
+                relative.to_string_lossy().replace('\\', "/"),
+                entry.path().to_path_buf(),
+            ));
         }
     }
-    files.sort_by_key(|path| path.to_lowercase());
+    files.sort_by_key(|(path, _)| path.to_lowercase());
     Ok(files)
 }
+
 fn visible_entry(entry: &DirEntry) -> bool {
     if entry.depth() == 0 {
         return true;
@@ -757,6 +787,58 @@ fn visible_entry(entry: &DirEntry) -> bool {
 
 /// Shortest query worth walking a workspace for. Below this the sidebar keeps
 /// filtering by file name — which costs nothing — and asks for nothing here.
+/// One character matches most of a large folder, so it costs the same as a whole
+/// phrase and finds little the name filter was not already showing. The demo
+/// backend applies the same floor, so the two cannot disagree about what a one
+/// letter query does.
+const MIN_CONTENT_SEARCH_CHARS: usize = 2;
+
+/// Longer than any search a person types, and cheap to check: the query is
+/// lowercased before it is used, so an unbounded string would be allocated
+/// before it was ever rejected.
+const MAX_CONTENT_SEARCH_CHARS: usize = 256;
+
+fn search_content(root: &Path, query: &str) -> Result<Vec<String>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.chars().count() < MIN_CONTENT_SEARCH_CHARS {
+        return Ok(Vec::new());
+    }
+    if needle.len() > MAX_CONTENT_SEARCH_CHARS {
+        return Err("That search is too long.".into());
+    }
+
+    let mut matches = Vec::new();
+    for (relative, full_path) in markdown_entries(root)? {
+        // A document that cannot be read right now — half-written by a sync
+        // client, held open by another program, not text at all — is skipped
+        // rather than failing the whole search. The sidebar is a convenience;
+        // one unreadable file must not cost the user every other match.
+        match fs::read_to_string(&full_path) {
+            Ok(content) => {
+                if searchable_body(&content).to_lowercase().contains(&needle) {
+                    matches.push(relative);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Ok(matches)
+}
+
+/// The text of a document a search is allowed to find, which is everything the
+/// writer typed and nothing the app typed for them. A `tags:` block is
+/// metadata, so no document is found merely because it carries a tag.
+///
+/// This borrows rather than copies, and reads the body through the same
+/// `front_matter` that `document_tags` uses, which is what makes the desktop app
+/// and the demo agree about which documents have metadata at all.
+fn searchable_body(content: &str) -> &str {
+    match front_matter(content) {
+        Some((_, body)) => body,
+        None => content,
+    }
+}
+
 /// Far longer than any real document path, and cheap to check: a caller that
 /// sends a megabyte of text should not make the process allocate for it.
 const MAX_DOCUMENT_PATH_BYTES: usize = 4096;
@@ -1263,7 +1345,8 @@ pub fn run() {
             save_document,
             create_document,
             rename_document,
-            query_analytics
+            query_analytics,
+            search_document_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running Wrava");
@@ -1759,5 +1842,179 @@ mod tests {
             with_backup.contains(&backup.display().to_string()),
             "the recovery copy must be named exactly: {with_backup}"
         );
+    }
+
+    /// Builds a workspace holding one document per named case, so the content
+    /// search is exercised against a real folder rather than a stubbed reader.
+    fn workspace_with(search_cases: &[(&str, &str)]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        for (relative, content) in search_cases {
+            let path = directory.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn finds_a_document_by_what_it_says_rather_than_what_it_is_called() {
+        let directory = workspace_with(&[
+            (
+                "2026-09-16 Book notes.md",
+                "---\ntags: [reading]\n---\n# Book notes\n\nThe harbourmaster keeps her own record.\n",
+            ),
+            (
+                "2026-09-15 Novel outline.md",
+                "---\ntags: [fiction]\n---\n# Novel outline\n\nA quiet coastal town watches its tides.\n",
+            ),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        // "harbourmaster" is in one body and in no file name.
+        assert_eq!(
+            search_content(&root, "harbourmaster").unwrap(),
+            vec!["2026-09-16 Book notes.md"]
+        );
+        // Sub-folders come back in the same relative form the sidebar already holds.
+        assert_eq!(
+            search_content(&root, "tides").unwrap(),
+            vec!["2026-09-15 Novel outline.md"]
+        );
+    }
+
+    #[test]
+    fn searches_document_bodies_case_insensitively() {
+        let directory = workspace_with(&[(
+            "notes.md",
+            "---\ntags: [reading]\n---\n# Notes\n\nThe Harbourmaster keeps her own record.\n",
+        )]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(search_content(&root, "HARBOURMASTER").unwrap(), vec!["notes.md"]);
+        assert_eq!(
+            search_content(&root, "  HarbourMaster  ").unwrap(),
+            vec!["notes.md"],
+            "the query is trimmed like every other search in the app"
+        );
+    }
+
+    #[test]
+    fn never_finds_a_document_by_its_front_matter_metadata() {
+        let directory = workspace_with(&[
+            (
+                "harbourmaster.md",
+                "---\ntags: [tidemaster]\ntitle: Notes\n---\n# Notes\n\nNothing to see.\n",
+            ),
+            ("plain.md", "---\ntags: [reading]\n---\n# Plain\n\nNothing to see.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        // Both tags are metadata. Neither document may be found by them.
+        assert!(
+            search_content(&root, "tidemaster").unwrap().is_empty(),
+            "a tags: block is not something the writer wrote"
+        );
+        assert!(search_content(&root, "title").unwrap().is_empty());
+        assert!(search_content(&root, "---").unwrap().is_empty());
+        // The document that does say it in its body is still found.
+        assert_eq!(
+            search_content(&root, "nothing").unwrap(),
+            vec!["harbourmaster.md", "plain.md"]
+        );
+    }
+
+    #[test]
+    fn honours_the_visibility_rules_the_folder_listing_uses() {
+        let directory = workspace_with(&[
+            ("visible.md", "# Visible\n\nA recorded tide.\n"),
+            (".hidden.md", "# Hidden\n\nA recorded tide.\n"),
+            ("node_modules/package.md", "# Installed\n\nA recorded tide.\n"),
+            (".git/objects/note.md", "# Object\n\nA recorded tide.\n"),
+            ("notes.txt", "A recorded tide, but not a document.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(
+            search_content(&root, "recorded").unwrap(),
+            vec!["visible.md"],
+            "the same dotfiles, node_modules and non-Markdown files are skipped"
+        );
+        assert_eq!(
+            markdown_files(&root).unwrap(),
+            vec!["visible.md"],
+            "searching cannot widen what the sidebar is allowed to list"
+        );
+    }
+
+    #[test]
+    fn skips_a_query_too_short_to_be_worth_the_walk() {
+        let directory = workspace_with(&[("notes.md", "# Notes\n\nTides.\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(search_content(&root, "").unwrap().is_empty());
+        assert!(search_content(&root, "   ").unwrap().is_empty());
+        assert!(search_content(&root, "t").unwrap().is_empty());
+        assert_eq!(
+            search_content(&root, "ti").unwrap(),
+            vec!["notes.md"],
+            "the floor is the same on both sides of it"
+        );
+    }
+
+    #[test]
+    fn refuses_an_absurdly_long_search_query() {
+        let directory = workspace_with(&[("notes.md", "# Notes\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(search_content(&root, &"a".repeat(MAX_CONTENT_SEARCH_CHARS + 1)).is_err());
+        assert!(search_content(
+            &root,
+            &"a".repeat(MAX_CONTENT_SEARCH_CHARS)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn leaves_file_name_matching_to_the_sidebar() {
+        let directory = workspace_with(&[(
+            "harbourmaster.md",
+            "---\ntags: [reading]\n---\n# Notes\n\nNothing about tides.\n",
+        )]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(
+            search_content(&root, "harbourmaster").unwrap().is_empty(),
+            "the name is already filtered in the frontend, where every path is held"
+        );
+    }
+
+    #[test]
+    fn keeps_searching_past_a_document_it_cannot_read() {
+        let directory = workspace_with(&[
+            ("broken.md", "# Broken\n\nA recorded tide.\n"),
+            ("readable.md", "# Readable\n\nA recorded tide.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+        // A file the walker lists but cannot decode as text: not every `.md` on
+        // disk is a document Wrava or anyone else can read as one.
+        fs::write(root.join("broken.md"), [0xff, 0xfe, 0x00]).unwrap();
+
+        assert_eq!(search_content(&root, "recorded").unwrap(), vec!["readable.md"]);
+    }
+
+    #[test]
+    fn agrees_with_the_frontend_splitter_about_a_document_with_no_metadata() {
+        // `splitMarkdownDocument` in src/documentIdentity.ts leaves a document
+        // with no front matter whole, so a body that merely opens with a rule
+        // is still searchable. The two sides have documented differences; this
+        // is the case they must not disagree on.
+        let directory = workspace_with(&[("rule.md", "---\n\nJust a rule, then the tide.\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(
+            searchable_body("---\n\nJust a rule, then the tide.\n"),
+            "---\n\nJust a rule, then the tide.\n"
+        );
+        assert_eq!(search_content(&root, "tide").unwrap(), vec!["rule.md"]);
     }
 }

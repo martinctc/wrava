@@ -16,6 +16,7 @@ import {
   demoRefreshWorkspace,
   demoRenameDocument,
   demoSaveDocument,
+  demoSearchDocumentContent,
 } from "./demoBackend";
 
 export { DEMO_BANNER };
@@ -73,4 +74,14 @@ export async function renameDocument(path: string, name: string): Promise<Docume
 export async function queryAnalytics(): Promise<AnalyticsView> {
   if (isDemoMode()) return demoQueryAnalytics();
   return invoke<AnalyticsView>("query_analytics");
+}
+
+/**
+ * The documents whose text contains `query`, as the same relative paths
+ * `WorkspaceView.files` carries. An empty list means "nothing extra to add",
+ * which is also what a query too short to be worth a walk returns.
+ */
+export async function searchDocumentContent(query: string): Promise<string[]> {
+  if (isDemoMode()) return demoSearchDocumentContent(query);
+  return invoke<string[]>("search_document_content", { query });
 }
