@@ -16,6 +16,18 @@ core feature set is still settling.
   its own history rather than sharing one.
 - Deeper text analytics: a "Writing patterns" card on the analytics page shows
   the most frequent two-word pairs in the workspace, with stopwords removed.
+- The document search box now matches the text inside documents as well as
+  their filenames. Front matter is not searched, so a query no longer matches a
+  document merely because it carries a tag.
+- The analytics page can export its data as CSV or JSON, or copy the CSV to the
+  clipboard.
+
+### Fixed
+
+- Editing a document that contained only a YAML front matter block, and had no
+  trailing newline, could write the file back without its front matter. The
+  tags were then missing from the sidebar and the analytics. Existing documents
+  are repaired the next time they are saved.
 
 ## 0.1.1 - 2026-09-27
 
