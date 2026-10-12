@@ -107,9 +107,11 @@ in the selected workspace. Derived activity data is stored in the operating
 system's local application-data directory.
 
 Wrava writes one file into the selected folder, `wrava.json`, so a folder's
-history survives being renamed or moved. It contains a random identifier and
-the folder's own path — never document contents or activity data. Wrava only
-ever creates and updates this file; it does not remove it.
+history survives being renamed or moved. It contains a marker naming Wrava as
+its writer, a random identifier, and the folder's own path — never document
+contents or activity data. Wrava only ever creates and updates this file; it
+does not remove it, and it ignores a `wrava.json` that does not carry its
+marker rather than adopting one that belongs to something else.
 
 The bundled British and US spellcheck dictionaries run entirely on the device.
 System-default spellchecking follows the host's spelling settings. Appearance,
