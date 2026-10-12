@@ -6,7 +6,7 @@ import { isolateHistory } from "@codemirror/commands";
 import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
-import { suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
+import { joinMarkdownBody, suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import { loadLocalSettings, SETTINGS_KEY, type Settings } from "./settings";
 import { forgetWorkspacePath, isMissingFolderError, loadWorkspacePath, saveWorkspacePath } from "./workspaceMemory";
 import { goalProgress, sortDocuments, weekPace } from "./writingProgress";
@@ -152,7 +152,7 @@ function App() {
 
   function currentContent() {
     if (editorMode !== "rich" || !richEditorRef.current) return content;
-    return splitMarkdownDocument(content).frontMatter + richEditorRef.current.getMarkdown();
+    return joinMarkdownBody(content, richEditorRef.current.getMarkdown());
   }
 
   async function changeWritingTitle(nextTitle: string) {
@@ -336,7 +336,7 @@ function App() {
       const latest = draftRef.current;
       if (latest.document?.path !== path) return;
       const latestContent = latest.editorMode === "rich" && richEditorRef.current
-        ? splitMarkdownDocument(latest.content).frontMatter + richEditorRef.current.getMarkdown()
+        ? joinMarkdownBody(latest.content, richEditorRef.current.getMarkdown())
         : latest.content;
       // A save acknowledges its snapshot, never edits typed while it was running.
       const unchanged = latestContent === submitted && latest.tagInput === submittedTags;
@@ -454,10 +454,7 @@ function App() {
   }
 
   function updateRichContent(markdownBody: string) {
-    setContent((current) => {
-      const { frontMatter } = splitMarkdownDocument(current);
-      return `${frontMatter}${markdownBody}`;
-    });
+    setContent((current) => joinMarkdownBody(current, markdownBody));
   }
 
   function changeEditorMode(mode: "rich" | "source") {

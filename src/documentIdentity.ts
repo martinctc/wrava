@@ -42,6 +42,21 @@ export function splitMarkdownDocument(markdown: string) {
   return { frontMatter: markdown.slice(0, boundary), body: markdown.slice(boundary) };
 }
 
+// Rejoin the halves `splitMarkdownDocument` took apart. The rich editor owns the body,
+// so every save and every keystroke re-glues the two — and the split is not symmetric:
+// a metadata-only document ends at the closing `---` with no trailing newline, so a bare
+// concatenation produces `---\n---Hello.`. That no longer matches a closing fence, so the
+// next split reads the whole file as body and the next save writes the document without
+// its metadata. Separate the halves with the document's own line ending, exactly as
+// `withWritingTitle` already does for the same hazard.
+export function joinMarkdownBody(content: string, body: string) {
+  const { frontMatter } = splitMarkdownDocument(content);
+  if (!frontMatter) return body;
+  if (frontMatter.endsWith("\n")) return frontMatter + body;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  return frontMatter + newline + body;
+}
+
 function firstHeading(body: string) {
   const tree = markdownLanguage.parser.parse(body);
   for (let node = tree.topNode.firstChild; node; node = node.nextSibling) {
