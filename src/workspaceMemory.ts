@@ -21,12 +21,18 @@ export function forgetWorkspacePath(storage: Pick<Storage, "removeItem">): void 
 // other failure — an offline network drive, a sync tool holding a lock, a
 // database error — is treated as transient, so the remembered path is kept
 // and retried on the next launch instead of being silently thrown away.
+//
+// The verdict is the error's `code`, set by the Rust core from the underlying
+// io::ErrorKind. An earlier version matched substrings of the operating
+// system's message text, which meant a non-English locale stopped recognising
+// a folder that really had been deleted, and any unrelated error containing
+// "not a directory" silently cleared the preference.
+export const FOLDER_MISSING_CODE = "folder_missing";
+
 export function isMissingFolderError(error: unknown): boolean {
-  const message = String(error).toLowerCase();
   return (
-    message.includes("cannot find") ||
-    message.includes("no such file") ||
-    message.includes("not a folder") ||
-    message.includes("not a directory")
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === FOLDER_MISSING_CODE
   );
 }

@@ -37,9 +37,47 @@ export async function chooseWorkspaceFolder(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+/**
+ * An error the backend reported, carrying the machine-readable `code` the Rust
+ * core attaches to it.
+ *
+ * Tauri rejects with the serialised error value rather than an `Error`, and
+ * `String()` on that object would render `[object Object]` in the status line.
+ * `toString` is overridden so the text a writer reads is the message alone,
+ * exactly as it was before errors carried a code.
+ */
+export class BackendError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "BackendError";
+  }
+
+  override toString(): string {
+    return this.message;
+  }
+}
+
+type CodedError = { code?: unknown; message?: unknown };
+
+/** Re-raises whatever the backend rejected as a `BackendError` that keeps its code. */
+function asBackendError(error: unknown): BackendError {
+  if (error instanceof BackendError) return error;
+  if (typeof error === "object" && error !== null) {
+    const { code, message } = error as CodedError;
+    if (typeof message === "string") {
+      return new BackendError(message, typeof code === "string" ? code : undefined);
+    }
+  }
+  return new BackendError(String(error));
+}
+
 export async function openWorkspace(path: string): Promise<WorkspaceView> {
   if (isDemoMode()) return demoOpenWorkspace();
-  return invoke<WorkspaceView>("open_workspace", { path });
+  try {
+    return await invoke<WorkspaceView>("open_workspace", { path });
+  } catch (error) {
+    throw asBackendError(error);
+  }
 }
 
 export async function refreshWorkspace(): Promise<WorkspaceView> {

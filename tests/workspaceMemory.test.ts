@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  FOLDER_MISSING_CODE,
   WORKSPACE_KEY,
   forgetWorkspacePath,
   isMissingFolderError,
@@ -42,18 +43,25 @@ test("ignores blank remembered paths", () => {
 });
 
 test("treats a genuinely missing folder as forgettable", () => {
-  assert.equal(isMissingFolderError("The system cannot find the file specified. (os error 2)"), true);
-  assert.equal(isMissingFolderError("The system cannot find the path specified."), true);
-  assert.equal(isMissingFolderError("No such file or directory (os error 2)"), true);
-  assert.equal(isMissingFolderError("The selected workspace is not a folder."), true);
-  assert.equal(isMissingFolderError("Not a directory (os error 20)"), true);
+  // The code is what decides this, not the wording. Each of these messages used
+  // to be matched by substring, which broke on a localised operating system.
+  assert.equal(isMissingFolderError({ code: FOLDER_MISSING_CODE, message: "The system cannot find the path specified." }), true);
+  assert.equal(isMissingFolderError({ code: FOLDER_MISSING_CODE, message: "Der Pfad wurde nicht gefunden." }), true);
+  assert.equal(isMissingFolderError({ code: FOLDER_MISSING_CODE, message: "The selected workspace is not a folder." }), true);
 });
 
 test("keeps the remembered folder for failures that may be temporary", () => {
-  assert.equal(isMissingFolderError("Access is denied. (os error 5)"), false);
-  assert.equal(isMissingFolderError("The process cannot access the file because it is being used by another process. (os error 32)"), false);
-  assert.equal(isMissingFolderError("Database is locked"), false);
-  assert.equal(isMissingFolderError("Error: something went wrong"), false);
+  assert.equal(isMissingFolderError({ code: "workspace_open_failed", message: "Access is denied. (os error 5)" }), false);
+  assert.equal(isMissingFolderError({ code: "workspace_open_failed", message: "The process cannot access the file because it is being used by another process. (os error 32)" }), false);
+  assert.equal(isMissingFolderError({ code: "workspace_open_failed", message: "Database is locked" }), false);
   assert.equal(isMissingFolderError(new Error("network is unreachable")), false);
   assert.equal(isMissingFolderError(undefined), false);
+});
+
+test("a message that merely reads like a missing folder is not enough", () => {
+  // The regression this replaces: any error whose text happened to contain
+  // "not a directory" silently threw away the remembered folder.
+  assert.equal(isMissingFolderError("The process cannot access the file because it is being used by another process."), false);
+  assert.equal(isMissingFolderError("Drive D:\\ is not a directory mount"), false);
+  assert.equal(isMissingFolderError({ message: "The system cannot find the path specified." }), false);
 });

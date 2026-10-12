@@ -125,15 +125,54 @@ struct TagActivity {
     net_change: i64,
 }
 
+/// Why a workspace could not be opened, as a machine-readable code beside the
+/// message shown to the writer.
+///
+/// The distinction matters because it decides whether Wrava forgets the
+/// remembered folder: a folder that is gone should be forgotten, while a
+/// disconnected drive or a locked database should be retried next launch.
+#[derive(Serialize)]
+struct WorkspaceOpenError {
+    code: &'static str,
+    message: String,
+}
+
+impl WorkspaceOpenError {
+    fn missing(message: impl Into<String>) -> Self {
+        Self {
+            code: "folder_missing",
+            message: message.into(),
+        }
+    }
+
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "workspace_open_failed",
+            message: message.into(),
+        }
+    }
+}
+
 #[tauri::command]
 fn open_workspace(
     app: tauri::AppHandle,
     state: State<AppState>,
     path: String,
-) -> Result<WorkspaceView, String> {
-    let root = fs::canonicalize(&path).map_err(display_error)?;
+) -> Result<WorkspaceView, WorkspaceOpenError> {
+    // Only the folder itself being absent is `folder_missing`. Every other
+    // failure — a disconnected drive, a sync client holding a lock, a database
+    // error — is `workspace_open_failed`, because the frontend forgets the
+    // remembered folder on the first and retries the second. Deciding that here,
+    // from the actual io::ErrorKind, keeps the frontend from having to recognise
+    // an operating system's message wording, which is localised.
+    let root = fs::canonicalize(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => WorkspaceOpenError::missing(display_error(error)),
+        _ => WorkspaceOpenError::failed(display_error(error)),
+    })?;
     if !root.is_dir() {
-        return Err("The selected workspace is not a folder.".into());
+        return Err(WorkspaceOpenError::missing(
+            "The selected workspace is not a folder.",
+        ));
     }
 
     // The stable identity lives in the folder itself so history survives
@@ -145,19 +184,24 @@ fn open_workspace(
     let workspaces = app
         .path()
         .app_local_data_dir()
-        .map_err(display_error)?
+        .map_err(|error| WorkspaceOpenError::failed(display_error(error)))?
         .join("workspaces");
-    let database_path = resolve_database_path(&workspaces, stable_key.as_deref(), &legacy_key)?;
+    let database_path = resolve_database_path(&workspaces, stable_key.as_deref(), &legacy_key)
+        .map_err(WorkspaceOpenError::failed)?;
     if let Some(parent) = database_path.parent() {
-        fs::create_dir_all(parent).map_err(display_error)?;
+        fs::create_dir_all(parent)
+            .map_err(|error| WorkspaceOpenError::failed(display_error(error)))?;
     }
 
-    let database = open_database(&database_path)?;
-    initialize_database(&database)?;
+    let database = open_database(&database_path).map_err(WorkspaceOpenError::failed)?;
+    initialize_database(&database).map_err(WorkspaceOpenError::failed)?;
     let mut workspace = Workspace { root, database };
-    reconcile(&mut workspace)?;
-    let view = workspace_view(&workspace)?;
-    *state.workspace.lock().map_err(display_error)? = Some(workspace);
+    reconcile(&mut workspace).map_err(WorkspaceOpenError::failed)?;
+    let view = workspace_view(&workspace).map_err(WorkspaceOpenError::failed)?;
+    *state
+        .workspace
+        .lock()
+        .map_err(|error| WorkspaceOpenError::failed(display_error(error)))? = Some(workspace);
     Ok(view)
 }
 
