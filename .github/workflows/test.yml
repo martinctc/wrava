@@ -1,0 +1,98 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Supersede in-progress runs for the same PR/ref so a push of new commits
+# immediately replaces the run testing the previous head. `github.ref` is
+# `refs/pull/<n>/merge` for pull_request events, so PR runs never cancel
+# each other across different PRs.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node 24 is required, not cosmetic: `npm test` runs
+      # `node --test tests/*.test.ts` and the test files import `../src/*.ts`
+      # directly. That relies on Node's built-in TypeScript type stripping,
+      # which is on by default from Node 24 (see README "Prerequisites").
+      # `cache: npm` keys the npm cache off package-lock.json.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Node test runner for tests/*.test.ts, followed by the cross-file version
+      # consistency check. tests/writingControls.browser.cjs is deliberately not
+      # part of `npm test`: it is a manual regression script that needs a running
+      # preview server and a local Chromium, so it stays out of CI.
+      - name: Run frontend tests
+        run: npm test
+
+  rust-tests:
+    name: Rust tests
+    # Why Windows rather than ubuntu-latest (option (a)):
+    #  * Windows is the only platform Wrava ships: release.yml builds the MSI and
+    #    NSIS installers on windows-latest, and README lists "Windows
+    #    prerequisites for Tauri 2".
+    #  * The `tauri` v2 crate on Linux needs system WebKit/GTK development
+    #    packages (libwebkit2gtk-4.1-dev, libgtk-3-dev,
+    #    libayatana-appindicator3-dev, librsvg2-dev, pkg-config,
+    #    build-essential) that are not preinstalled on GitHub runners. A bare
+    #    `cargo test` there would fail to compile.
+    #  * windows-latest ships the MSVC toolchain and the Tauri Windows
+    #    prerequisites preinstalled, so the job compiles with no extra setup.
+    #  * src/lib.rs also has a Windows-specific test
+    #    (tests::display_root_hides_the_windows_verbatim_prefix); matching the
+    #    release platform means the suite that guards installers is the one CI
+    #    actually runs.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Same action and channel already used by release.yml, so CI compiles
+      # against the same stable toolchain that builds the installers.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cargo cache: prefer Swatinem/rust-cache@v2 over a hand-rolled
+      # actions/cache step because it builds the restore key from the exact
+      # toolchain, the Cargo.lock hash, rustflags/target and the workspace
+      # layout, restores both ~/.cargo/registry and target/, and prunes old
+      # entries against a 10 GB repo cap. A manual actions/cache key would need
+      # hand-maintained hashing and would never evict, so the cache would grow
+      # until GitHub's 10 GB repository limit silently fails saves. The npm job
+      # needs no equivalent because setup-node's `cache: npm` already covers it.
+      - name: Cache Rust toolchain and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # `--locked` fails the job if Cargo.lock would need updating, so a stale
+      # lockfile cannot silently drift in a PR. No `npm ci` / `npm run build`
+      # is needed beforehand: tauri-build only embeds `frontendDist` for
+      # release builds. Under the debug/test profile it emits `cfg(dev)` and,
+      # because tauri.conf.json sets build.devUrl, Tauri uses an empty asset set
+      # instead of requiring dist/ to exist.
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml

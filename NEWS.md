@@ -4,12 +4,30 @@ This file tracks user-facing changes. Wrava follows [Semantic
 Versioning](https://semver.org/); the version stays below `1.0.0` while the
 core feature set is still settling.
 
-## Unreleased
+## 0.1.2 - 2026-10-12
 
 ### Added
 
+- Reopens the last used writing folder on startup, with a Forget folder control
+  to clear it. Only the folder path is remembered, and never in the browser demo.
+- Activity history now survives renaming or moving a writing folder. Wrava
+  writes a small `wrava.json` into the folder holding a stable id, and keys its
+  local database by that id instead of the folder path. A copied folder is given
+  its own history rather than sharing one.
 - Deeper text analytics: a "Writing patterns" card on the analytics page shows
   the most frequent two-word pairs in the workspace, with stopwords removed.
+- The document search box now matches the text inside documents as well as
+  their filenames. Front matter is not searched, so a query no longer matches a
+  document merely because it carries a tag.
+- The analytics page can export its data as CSV or JSON, or copy the CSV to the
+  clipboard.
+
+### Fixed
+
+- Editing a document that contained only a YAML front matter block, and had no
+  trailing newline, could write the file back without its front matter. The
+  tags were then missing from the sidebar and the analytics. Existing documents
+  are repaired the next time they are saved.
 
 ## 0.1.1 - 2026-09-27
 

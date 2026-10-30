@@ -2,7 +2,7 @@ use atomicwrites::{AllowOverwrite, AtomicFile, DisallowOverwrite};
 use chrono::{Datelike, Local, NaiveDate};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use similar::{ChangeTag, TextDiff};
 use std::{
@@ -15,6 +15,14 @@ use std::{
 use tauri::{Manager, State};
 use unicode_segmentation::UnicodeSegmentation;
 use walkdir::{DirEntry, WalkDir};
+
+/// Written into the writing folder itself. It holds the stable identity that
+/// keeps activity history attached to a folder across renames and moves.
+const IDENTITY_FILE: &str = "wrava.json";
+/// Written into every identity Wrava creates, so a `wrava.json` belonging to
+/// some other program is never mistaken for one of ours.
+const IDENTITY_MARKER: &str = "wrava-workspace";
+const DATABASE_FILE: &str = "wrava.sqlite3";
 
 #[derive(Default)]
 struct AppState {
@@ -117,35 +125,83 @@ struct TagActivity {
     net_change: i64,
 }
 
+/// Why a workspace could not be opened, as a machine-readable code beside the
+/// message shown to the writer.
+///
+/// The distinction matters because it decides whether Wrava forgets the
+/// remembered folder: a folder that is gone should be forgotten, while a
+/// disconnected drive or a locked database should be retried next launch.
+#[derive(Serialize)]
+struct WorkspaceOpenError {
+    code: &'static str,
+    message: String,
+}
+
+impl WorkspaceOpenError {
+    fn missing(message: impl Into<String>) -> Self {
+        Self {
+            code: "folder_missing",
+            message: message.into(),
+        }
+    }
+
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "workspace_open_failed",
+            message: message.into(),
+        }
+    }
+}
+
 #[tauri::command]
 fn open_workspace(
     app: tauri::AppHandle,
     state: State<AppState>,
     path: String,
-) -> Result<WorkspaceView, String> {
-    let root = fs::canonicalize(&path).map_err(display_error)?;
+) -> Result<WorkspaceView, WorkspaceOpenError> {
+    // Only the folder itself being absent is `folder_missing`. Every other
+    // failure — a disconnected drive, a sync client holding a lock, a database
+    // error — is `workspace_open_failed`, because the frontend forgets the
+    // remembered folder on the first and retries the second. Deciding that here,
+    // from the actual io::ErrorKind, keeps the frontend from having to recognise
+    // an operating system's message wording, which is localised.
+    let root = fs::canonicalize(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => WorkspaceOpenError::missing(display_error(error)),
+        _ => WorkspaceOpenError::failed(display_error(error)),
+    })?;
     if !root.is_dir() {
-        return Err("The selected workspace is not a folder.".into());
+        return Err(WorkspaceOpenError::missing(
+            "The selected workspace is not a folder.",
+        ));
     }
 
-    let workspace_key = content_hash(root.to_string_lossy().as_ref());
-    let database_path = app
+    // The stable identity lives in the folder itself so history survives
+    // renames and moves. When it cannot be used — read-only folder, or a
+    // wrava.json Wrava did not write — fall back to the old path-derived key,
+    // which is exactly how the app behaved before identities existed.
+    let legacy_key = content_hash(root.to_string_lossy().as_ref());
+    let stable_key = ensure_identity(&root).map(|identity| content_hash(&identity.id));
+    let workspaces = app
         .path()
         .app_local_data_dir()
-        .map_err(display_error)?
-        .join("workspaces")
-        .join(&workspace_key[..16])
-        .join("wrava.sqlite3");
+        .map_err(|error| WorkspaceOpenError::failed(display_error(error)))?
+        .join("workspaces");
+    let database_path = resolve_database_path(&workspaces, stable_key.as_deref(), &legacy_key)
+        .map_err(WorkspaceOpenError::failed)?;
     if let Some(parent) = database_path.parent() {
-        fs::create_dir_all(parent).map_err(display_error)?;
+        fs::create_dir_all(parent)
+            .map_err(|error| WorkspaceOpenError::failed(display_error(error)))?;
     }
 
-    let database = Connection::open(database_path).map_err(display_error)?;
-    initialize_database(&database)?;
+    let database = open_database(&database_path).map_err(WorkspaceOpenError::failed)?;
+    initialize_database(&database).map_err(WorkspaceOpenError::failed)?;
     let mut workspace = Workspace { root, database };
-    reconcile(&mut workspace)?;
-    let view = workspace_view(&workspace)?;
-    *state.workspace.lock().map_err(display_error)? = Some(workspace);
+    reconcile(&mut workspace).map_err(WorkspaceOpenError::failed)?;
+    let view = workspace_view(&workspace).map_err(WorkspaceOpenError::failed)?;
+    *state
+        .workspace
+        .lock()
+        .map_err(|error| WorkspaceOpenError::failed(display_error(error)))? = Some(workspace);
     Ok(view)
 }
 
@@ -314,6 +370,15 @@ fn query_analytics(state: State<AppState>) -> Result<AnalyticsView, String> {
     with_workspace(&state, |workspace| analytics_view(&workspace.database))
 }
 
+/// Finds documents whose text contains `query`, so a writer can look for what
+/// they wrote rather than only for what they named the file. File-name
+/// matching stays in the sidebar, which already has every path in hand; this
+/// walks the workspace for the half the frontend cannot see.
+#[tauri::command]
+fn search_document_content(state: State<AppState>, query: String) -> Result<Vec<String>, String> {
+    with_workspace(&state, |workspace| search_content(&workspace.root, &query))
+}
+
 fn with_workspace<T>(
     state: &State<AppState>,
     operation: impl FnOnce(&mut Workspace) -> Result<T, String>,
@@ -357,7 +422,7 @@ fn initialize_database(database: &Connection) -> Result<(), String> {
 
 fn workspace_view(workspace: &Workspace) -> Result<WorkspaceView, String> {
     Ok(WorkspaceView {
-        root: workspace.root.to_string_lossy().into_owned(),
+        root: display_root(&workspace.root),
         files: markdown_files(&workspace.root)?,
         stats: activity_stats(&workspace.database)?,
     })
@@ -718,6 +783,23 @@ fn strip_front_matter(markdown: &str) -> &str {
 }
 
 fn markdown_files(root: &Path) -> Result<Vec<String>, String> {
+    Ok(markdown_entries(root)?
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect())
+}
+
+/// Every visible Markdown document, as the relative path the app shows and a
+/// full path to read. Both the folder listing and the content search walk the
+/// workspace exactly once and in exactly one way: the same `WalkDir`, the same
+/// `visible_entry`, the same `.md` test, the same ordering.
+///
+/// The relative path is derived from a path the walker itself produced beneath
+/// `root`, so it carries no `ParentDir` or prefix component and always ends in
+/// `.md` — it is exactly what `resolve_document_path` accepts, and it is the
+/// same string the sidebar already sends back to open the document. Nothing
+/// here re-decides what a path may be.
+fn markdown_entries(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root)
         .follow_links(false)
@@ -732,10 +814,13 @@ fn markdown_files(root: &Path) -> Result<Vec<String>, String> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
         {
             let relative = entry.path().strip_prefix(root).map_err(display_error)?;
-            files.push(relative.to_string_lossy().replace('\\', "/"));
+            files.push((
+                relative.to_string_lossy().replace('\\', "/"),
+                entry.path().to_path_buf(),
+            ));
         }
     }
-    files.sort_by_key(|path| path.to_lowercase());
+    files.sort_by_key(|(path, _)| path.to_lowercase());
     Ok(files)
 }
 
@@ -747,8 +832,76 @@ fn visible_entry(entry: &DirEntry) -> bool {
     !name.starts_with('.') && name != "node_modules"
 }
 
+/// Shortest query worth walking a workspace for. Below this the sidebar keeps
+/// filtering by file name — which costs nothing — and asks for nothing here.
+/// One character matches most of a large folder, so it costs the same as a whole
+/// phrase and finds little the name filter was not already showing. The demo
+/// backend applies the same floor, so the two cannot disagree about what a one
+/// letter query does.
+const MIN_CONTENT_SEARCH_CHARS: usize = 2;
+
+/// Longer than any search a person types, and cheap to check: the query is
+/// lowercased before it is used, so an unbounded string would be allocated
+/// before it was ever rejected.
+const MAX_CONTENT_SEARCH_CHARS: usize = 256;
+
+fn search_content(root: &Path, query: &str) -> Result<Vec<String>, String> {
+    let needle = query.trim().to_lowercase();
+    if needle.chars().count() < MIN_CONTENT_SEARCH_CHARS {
+        return Ok(Vec::new());
+    }
+    if needle.len() > MAX_CONTENT_SEARCH_CHARS {
+        return Err("That search is too long.".into());
+    }
+
+    let mut matches = Vec::new();
+    for (relative, full_path) in markdown_entries(root)? {
+        // A document that cannot be read right now — half-written by a sync
+        // client, held open by another program, not text at all — is skipped
+        // rather than failing the whole search. The sidebar is a convenience;
+        // one unreadable file must not cost the user every other match.
+        match fs::read_to_string(&full_path) {
+            Ok(content) => {
+                if searchable_body(&content).to_lowercase().contains(&needle) {
+                    matches.push(relative);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    Ok(matches)
+}
+
+/// The text of a document a search is allowed to find, which is everything the
+/// writer typed and nothing the app typed for them. A `tags:` block is
+/// metadata, so no document is found merely because it carries a tag.
+///
+/// This borrows rather than copies, and reads the body through the same
+/// `front_matter` that `document_tags` uses, which is what makes the desktop app
+/// and the demo agree about which documents have metadata at all.
+fn searchable_body(content: &str) -> &str {
+    match front_matter(content) {
+        Some((_, body)) => body,
+        None => content,
+    }
+}
+
+/// Far longer than any real document path, and cheap to check: a caller that
+/// sends a megabyte of text should not make the process allocate for it.
+const MAX_DOCUMENT_PATH_BYTES: usize = 4096;
+
 fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    // Rejected before the path is parsed. A NUL byte truncates the path for
+    // every Win32 call that follows, and an unbounded string is a denial of
+    // service dressed up as a file name.
+    if relative.len() > MAX_DOCUMENT_PATH_BYTES || relative.contains('\0') {
+        return Err("The requested document path is not allowed.".into());
+    }
+
     let relative_path = Path::new(relative);
+    // Traversal is decided per component, not per character. A textual ".."
+    // check would reject legitimate names such as "draft..notes.md", so the
+    // Component::ParentDir test below is the whole defence.
     if relative_path.is_absolute()
         || relative_path
             .components()
@@ -953,9 +1106,28 @@ fn front_matter(content: &str) -> Option<(&str, &str)> {
     } else {
         return None;
     };
-    let closing = format!("{newline}---{newline}");
-    let closing_index = content[opening_length..].find(&closing)? + opening_length;
-    let body_start = closing_index + closing.len();
+    let fence = format!("{newline}---");
+    let search = &content[opening_length..];
+    // The closing fence is a line of its own, and the last line of a file needs no
+    // newline after it: `---\ntags: [essay]\n---` is valid front matter. Requiring a
+    // trailing newline here dropped the tags of every metadata-only document, and the
+    // TypeScript splitter's `|$` alternative does accept end-of-input, so the two sides
+    // disagreed about which documents had metadata at all. Take the first fence whose
+    // remainder is either another line or the end of the file, so a body that merely
+    // starts with `---` (a horizontal rule) is still not mistaken for the close.
+    let closing_index = search
+        .match_indices(&fence)
+        .find(|(index, _)| {
+            let rest = &search[index + fence.len()..];
+            rest.is_empty() || rest.starts_with(newline)
+        })
+        .map(|(index, _)| index + opening_length)?;
+    let rest = &content[closing_index + fence.len()..];
+    let body_start = if rest.starts_with(newline) {
+        closing_index + fence.len() + newline.len()
+    } else {
+        content.len()
+    };
     Some((
         &content[opening_length..closing_index],
         &content[body_start..],
@@ -980,6 +1152,259 @@ fn yaml_tag(value: &str) -> String {
     }
 }
 
+/// `deny_unknown_fields` is doing half the work here: any `wrava.json` carrying
+/// keys beyond these three fails to parse and is never adopted, whatever it
+/// calls itself.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceIdentity {
+    /// Marks the file as Wrava's own. Absent from identities written before the
+    /// marker existed, which are still honoured and then rewritten with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    written_by: Option<String>,
+    id: String,
+    root: String,
+}
+
+impl WorkspaceIdentity {
+    /// Whether this file is one Wrava wrote, or the bare `{id, root}` an
+    /// earlier build wrote.
+    ///
+    /// Accepting the markerless shape keeps a folder that was opened by a
+    /// pre-release build attached to its activity history instead of silently
+    /// dropping back to path-keying. The marker still does the real work: it is
+    /// what distinguishes this from a file belonging to another program, and
+    /// the next refresh rewrites the identity carrying it.
+    fn is_recognised(&self) -> bool {
+        !self.id.trim().is_empty()
+            && matches!(self.written_by.as_deref(), None | Some(IDENTITY_MARKER))
+    }
+}
+
+fn new_identity(root: &str) -> WorkspaceIdentity {
+    WorkspaceIdentity {
+        written_by: Some(IDENTITY_MARKER.to_string()),
+        id: new_workspace_id(),
+        root: root.to_string(),
+    }
+}
+
+enum IdentityFile {
+    Missing,
+    Recognised(WorkspaceIdentity),
+    /// Present, but not an identity Wrava wrote. Never overwritten.
+    Unrecognised,
+}
+
+fn identity_path(root: &Path) -> PathBuf {
+    root.join(IDENTITY_FILE)
+}
+
+fn read_identity(root: &Path) -> IdentityFile {
+    match fs::read_to_string(identity_path(root)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => IdentityFile::Missing,
+        Err(_) => IdentityFile::Unrecognised,
+        Ok(contents) => match serde_json::from_str::<WorkspaceIdentity>(&contents) {
+            // Only a file Wrava wrote counts, or the bare one an earlier build
+            // wrote. Without this check any unrelated `wrava.json` that happened
+            // to carry an `id` field would be taken as an identity, and the
+            // activity database would be migrated onto it — a surprising outcome
+            // for a file the app did not write.
+            Ok(identity) if identity.is_recognised() => IdentityFile::Recognised(identity),
+            _ => IdentityFile::Unrecognised,
+        },
+    }
+}
+
+fn write_identity(root: &Path, identity: &WorkspaceIdentity, overwrite: bool) -> Option<()> {
+    let contents = format!("{}\n", serde_json::to_string_pretty(identity).ok()?);
+    let behavior = if overwrite {
+        AllowOverwrite
+    } else {
+        DisallowOverwrite
+    };
+    AtomicFile::new(identity_path(root), behavior)
+        .write(|file| file.write_all(contents.as_bytes()))
+        .ok()
+}
+
+/// Resolves which stable identity this folder should keep.
+///
+/// Returns `None` only when Wrava cannot record one, in which case the caller
+/// falls back to the path-derived database key.
+fn ensure_identity(root: &Path) -> Option<WorkspaceIdentity> {
+    let stored_root = display_root(root);
+    match read_identity(root) {
+        IdentityFile::Unrecognised => None,
+        IdentityFile::Missing => {
+            let identity = new_identity(&stored_root);
+            write_identity(root, &identity, false)?;
+            Some(identity)
+        }
+        IdentityFile::Recognised(existing) => {
+            let recorded = fs::canonicalize(&existing.root).ok();
+            match recorded {
+                // Another folder still exists at the recorded location, so this
+                // one is a copy. Give it its own history rather than merging two
+                // folders into a single activity record.
+                Some(recorded) if !same_path(&recorded, root) => {
+                    let identity = new_identity(&stored_root);
+                    write_identity(root, &identity, true)?;
+                    Some(identity)
+                }
+                // The recorded folder is gone: this is the same folder, moved.
+                // The id is kept, so the history follows it.
+                _ => {
+                    // An identity written before the marker existed is stamped
+                    // with it here, so the upgrade happens the first time the
+                    // folder is moved and never has to be reasoned about again.
+                    let marked = WorkspaceIdentity {
+                        written_by: Some(IDENTITY_MARKER.to_string()),
+                        id: existing.id.clone(),
+                        root: stored_root.clone(),
+                    };
+                    if existing.root != stored_root || existing.written_by.is_none() {
+                        let _ = write_identity(root, &marked, true);
+                    }
+                    Some(WorkspaceIdentity {
+                        root: stored_root,
+                        ..marked
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// Picks the database file for this open.
+///
+/// Existing databases were keyed by the folder path. When a stable key is in
+/// play and its database is missing, the old directory is moved across so the
+/// history is adopted rather than abandoned. A copy of the database is taken
+/// before that move, because an interrupted move would otherwise cost the user
+/// their history with nothing to fall back on. If the move fails for any
+/// reason, the legacy database is used for this session and migration is
+/// retried next time.
+fn resolve_database_path(
+    workspaces: &Path,
+    stable_key: Option<&str>,
+    legacy_key: &str,
+) -> Result<PathBuf, String> {
+    let legacy_directory = workspaces.join(&legacy_key[..16]);
+    let legacy_database = legacy_directory.join(DATABASE_FILE);
+
+    let Some(stable_key) = stable_key else {
+        return Ok(legacy_database);
+    };
+    if stable_key == legacy_key {
+        return Ok(workspaces.join(&stable_key[..16]).join(DATABASE_FILE));
+    }
+
+    let stable_directory = workspaces.join(&stable_key[..16]);
+    let stable_database = stable_directory.join(DATABASE_FILE);
+    if !stable_database.exists() && legacy_database.exists() {
+        fs::create_dir_all(workspaces).map_err(display_error)?;
+        backup_database(&legacy_database);
+        // A successful rename is not proof of a usable database, so check the
+        // file actually arrived. Both failure modes — the move failing and the
+        // move not delivering — fall back to the legacy database rather than
+        // failing the open.
+        if fs::rename(&legacy_directory, &stable_directory).is_ok() && stable_database.exists() {
+            return Ok(stable_database);
+        }
+        return Ok(legacy_database);
+    }
+    Ok(stable_database)
+}
+
+/// The recoverable copy kept beside a database that is about to be moved.
+fn database_backup(database: &Path) -> PathBuf {
+    database.with_file_name(format!("{DATABASE_FILE}.bak"))
+}
+
+/// Copies the database next to itself so the history survives a move that
+/// goes wrong. Failure is deliberately not fatal: a missing backup only means
+/// a worse outcome in a case the move already handles, and refusing to open
+/// the workspace over it would lose the user far more than it protects.
+fn backup_database(database: &Path) -> Option<PathBuf> {
+    let backup = database_backup(database);
+    match fs::copy(database, &backup) {
+        Ok(_) => Some(backup),
+        Err(_) => {
+            // A half-written backup is worse than none: it would look like a
+            // recovery path to a person reaching for one.
+            let _ = fs::remove_file(&backup);
+            None
+        }
+    }
+}
+
+/// Opens the activity database and checks it is readable before any query
+/// relies on it. The database is small and opened once per workspace, so a
+/// full integrity check costs nothing and turns a truncated file into an
+/// actionable message instead of a confusing SQLite error later on.
+fn open_database(path: &Path) -> Result<Connection, String> {
+    let database = Connection::open(path).map_err(display_error)?;
+    // Anything other than a clean "ok" — including a check that cannot be read
+    // at all — means the file cannot be trusted to hold the user's history.
+    let verdict = database
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .map_err(display_error);
+    if verdict.as_deref() != Ok("ok") {
+        let backup = database_backup(path);
+        let reason = verdict.unwrap_or_else(|error| error);
+        drop(database);
+        return Err(format!(
+            "The activity database for this folder appears to be corrupted ({reason}). \
+             Your documents are untouched, but the activity history cannot be read. \
+             If the copy kept at {} is present, it can be used to recover the history.",
+            backup.display()
+        ));
+    }
+    Ok(database)
+}
+
+/// The path as shown to the user. Rust's canonicalize returns Windows
+/// verbatim paths (`\\?\C:\...`), which are not what anyone wants to read.
+fn display_root(root: &Path) -> String {
+    let raw = root.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    raw.into_owned()
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left = left.to_string_lossy();
+    let right = right.to_string_lossy();
+    if std::env::consts::OS == "windows" {
+        left.eq_ignore_ascii_case(&right)
+    } else {
+        left == right
+    }
+}
+
+fn new_workspace_id() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let seed = format!(
+        "{}:{}:{}",
+        std::process::id(),
+        elapsed,
+        RandomState::new().build_hasher().finish(),
+    );
+    content_hash(&seed)
+}
+
 fn content_hash(content: &str) -> String {
     format!("{:x}", Sha256::digest(content.as_bytes()))
 }
@@ -1001,7 +1426,8 @@ pub fn run() {
             save_document,
             create_document,
             rename_document,
-            query_analytics
+            query_analytics,
+            search_document_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running Wrava");
@@ -1064,6 +1490,63 @@ mod tests {
         assert!(document_name(&"a".repeat(253)).is_err());
         assert_eq!(document_name("Mixed.mD").unwrap(), "Mixed.md");
         assert!(document_name(" ").is_err());
+    }
+
+    #[test]
+    fn rejects_document_paths_carrying_a_nul_byte() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let error = resolve_document_path(&root, "draft\0.md").expect_err("a NUL byte is refused");
+
+        assert!(
+            error.contains("not allowed"),
+            "the error must read as a path rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_absurdly_long_document_paths() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let too_long = format!("{}.md", "a".repeat(MAX_DOCUMENT_PATH_BYTES));
+        assert!(
+            resolve_document_path(&root, &too_long).is_err(),
+            "a path past the bound is refused"
+        );
+
+        let generous = format!("{}.md", "a".repeat(MAX_DOCUMENT_PATH_BYTES - 4));
+        assert!(
+            resolve_document_path(&root, &generous).is_ok(),
+            "the bound must stay generous enough for real names"
+        );
+    }
+
+    #[test]
+    fn accepts_names_whose_dots_are_not_a_parent_component() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        for name in ["draft..notes.md", "chapter 1..3.md"] {
+            fs::write(root.join(name), "# Written").unwrap();
+
+            let resolved = resolve_document_path(&root, name).unwrap();
+
+            assert_eq!(
+                resolved,
+                root.join(name),
+                "'..' inside a name is not traversal"
+            );
+        }
+    }
+
+    #[test]
+    fn still_rejects_a_parent_directory_component() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(resolve_document_path(&root, "../escape.md").is_err());
+        assert!(resolve_document_path(&root, "notes/../../escape.md").is_err());
     }
 
     #[test]
@@ -1130,6 +1613,45 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_closing_fence_that_ends_the_file_without_a_trailing_newline() {
+        // A metadata-only document is the shape that used to lose its tags on both
+        // sides of the app: `front_matter` here and `splitMarkdownDocument` in
+        // src/documentIdentity.ts both have to agree that the closing `---` at
+        // end-of-input really closes the block.
+        assert_eq!(front_matter("---\ntags: [essay]\n---"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\ntags: [essay]\n---\n"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\r\ntags: [essay]\r\n---"), Some(("tags: [essay]", "")));
+        assert_eq!(front_matter("---\r\ntags: [essay]\r\n---\r\n"), Some(("tags: [essay]", "")));
+        assert_eq!(
+            document_tags("---\ntags: [essay]\n---"),
+            vec!["essay".to_string()]
+        );
+
+        // A body may follow either form, and the body keeps its own line ending.
+        assert_eq!(
+            front_matter("---\ntags: [essay]\n---\nBody.\n"),
+            Some(("tags: [essay]", "Body.\n"))
+        );
+        assert_eq!(
+            front_matter("---\r\ntags: [essay]\r\n---\r\nBody.\r\n"),
+            Some(("tags: [essay]", "Body.\r\n"))
+        );
+
+        // A `---` that only starts a line inside the metadata is not a closing fence.
+        assert_eq!(front_matter("---\ntags: [a]\n---x"), None);
+        assert_eq!(front_matter("---\n\nJust a rule\n"), None);
+
+        // Retagging edits the existing block rather than prepending a second one.
+        let updated = set_document_tags("---\ntitle: Notes\ntags: [old]\n---", &["work".to_string()]);
+        assert_eq!(
+            updated,
+            "---\ntitle: Notes\ntags:\n  - work\n---\n"
+        );
+        assert_eq!(document_tags(&updated), vec!["work".to_string()]);
+        assert!(updated.contains("title: Notes"));
+    }
+
+    #[test]
     fn analytics_includes_zero_activity_days_and_document_totals() {
         let database = Connection::open_in_memory().expect("in-memory database");
         initialize_database(&database).expect("database schema");
@@ -1145,5 +1667,531 @@ mod tests {
         assert_eq!(analytics.active_days, 1);
         assert_eq!(analytics.current_word_count, 3);
         assert_eq!(analytics.documents[0].words_added, 1);
+    }
+
+    #[test]
+    fn display_root_hides_the_windows_verbatim_prefix() {
+        assert_eq!(
+            display_root(Path::new(r"\\?\C:\Users\kai\Writing")),
+            r"C:\Users\kai\Writing"
+        );
+        assert_eq!(
+            display_root(Path::new(r"\\?\UNC\server\share\Writing")),
+            r"\\server\share\Writing"
+        );
+        assert_eq!(display_root(Path::new("/home/kai/writing")), "/home/kai/writing");
+    }
+
+    #[test]
+    fn records_a_stable_identity_on_first_open() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let identity = ensure_identity(&root).expect("identity written");
+
+        assert!(!identity.id.is_empty());
+        assert_eq!(identity.root, display_root(&root));
+        assert!(matches!(
+            read_identity(&root),
+            IdentityFile::Recognised(stored) if stored.id == identity.id
+        ));
+    }
+
+    #[test]
+    fn keeps_the_identity_when_the_folder_is_renamed() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let before = directory.path().join("before");
+        fs::create_dir(&before).unwrap();
+        let original = ensure_identity(&fs::canonicalize(&before).unwrap())
+            .expect("identity written");
+
+        let after = directory.path().join("after");
+        fs::rename(&before, &after).unwrap();
+        let moved = fs::canonicalize(&after).unwrap();
+
+        let kept = ensure_identity(&moved).expect("identity read");
+
+        assert_eq!(kept.id, original.id, "history must follow the renamed folder");
+        assert_eq!(kept.root, display_root(&moved), "the recorded root is refreshed");
+    }
+
+    #[test]
+    fn issues_a_fresh_identity_for_a_copied_folder() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let original_directory = directory.path().join("original");
+        let copy_directory = directory.path().join("copy");
+        fs::create_dir(&original_directory).unwrap();
+        fs::create_dir(&copy_directory).unwrap();
+
+        let original_root = fs::canonicalize(&original_directory).unwrap();
+        let original = ensure_identity(&original_root).expect("identity written");
+
+        // A copied folder carries the same wrava.json, still naming the original.
+        let copy_root = fs::canonicalize(&copy_directory).unwrap();
+        let carried = serde_json::to_string(&WorkspaceIdentity {
+            written_by: original.written_by.clone(),
+            id: original.id.clone(),
+            root: display_root(&original_root),
+        })
+        .unwrap();
+        fs::write(identity_path(&copy_root), format!("{carried}\n")).unwrap();
+
+        let copy = ensure_identity(&copy_root).expect("identity written");
+
+        assert_ne!(copy.id, original.id, "copies must not share one history");
+        assert_eq!(copy.root, display_root(&copy_root));
+    }
+
+    #[test]
+    fn never_overwrites_an_identity_file_it_did_not_write() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let contents = "{\"project\":\"someone elses file\"}\n";
+        fs::write(identity_path(&root), contents).unwrap();
+
+        assert!(ensure_identity(&root).is_none());
+        assert_eq!(fs::read_to_string(identity_path(&root)).unwrap(), contents);
+    }
+
+    #[test]
+    fn ignores_an_identity_shaped_file_that_wrava_did_not_write() {
+        // A different program may well use a file called wrava.json. Carrying an
+        // `id` is not enough to make it ours: without the marker the folder falls
+        // back to the path-derived key, rather than migrating the activity
+        // database onto an id somebody else chose.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let contents = format!(
+            "{{\"id\":\"not-ours\",\"root\":{:?},\"project\":\"someone elses file\"}}\n",
+            display_root(&root)
+        );
+        fs::write(identity_path(&root), &contents).unwrap();
+
+        assert!(ensure_identity(&root).is_none());
+        assert_eq!(
+            fs::read_to_string(identity_path(&root)).unwrap(),
+            contents,
+            "a foreign file is never rewritten"
+        );
+    }
+
+    #[test]
+    fn writes_the_marker_into_the_identity_it_creates() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        let identity = ensure_identity(&root).expect("identity written");
+
+        assert_eq!(identity.written_by.as_deref(), Some(IDENTITY_MARKER));
+        let stored: WorkspaceIdentity =
+            serde_json::from_str(&fs::read_to_string(identity_path(&root)).unwrap()).unwrap();
+        assert_eq!(stored.written_by.as_deref(), Some(IDENTITY_MARKER));
+        assert_eq!(stored.id, identity.id);
+    }
+
+    #[test]
+    fn honours_an_identity_written_before_the_marker_existed() {
+        // A folder opened by a pre-release build carries a bare {id, root}. It
+        // must keep its history rather than silently dropping back to a
+        // path-derived key, which is what rejecting it outright would cause.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let legacy = WorkspaceIdentity {
+            written_by: None,
+            id: "an-id-from-an-earlier-build".to_string(),
+            root: display_root(&root),
+        };
+        fs::write(
+            identity_path(&root),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+
+        let kept = ensure_identity(&root).expect("a markerless identity is still ours");
+
+        assert_eq!(kept.id, legacy.id, "the folder keeps its identity");
+    }
+
+    #[test]
+    fn upgrades_a_markerless_identity_when_it_next_refreshes() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let root = fs::canonicalize(directory.path()).unwrap();
+        // A recorded location that no longer exists is what a moved folder looks
+        // like, and is what triggers the refresh that rewrites the file.
+        let legacy = WorkspaceIdentity {
+            written_by: None,
+            id: "an-id-from-an-earlier-build".to_string(),
+            root: directory
+                .path()
+                .join("somewhere-it-used-to-be")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        fs::write(
+            identity_path(&root),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+
+        ensure_identity(&root).expect("a markerless identity is still ours");
+
+        let stored: WorkspaceIdentity =
+            serde_json::from_str(&fs::read_to_string(identity_path(&root)).unwrap()).unwrap();
+        assert_eq!(
+            stored.written_by.as_deref(),
+            Some(IDENTITY_MARKER),
+            "the next refresh leaves the file marked as ours"
+        );
+        assert_eq!(
+            stored.id, legacy.id,
+            "the id is not disturbed by the upgrade"
+        );
+    }
+
+    #[test]
+    fn moves_the_legacy_database_when_adopting_a_stable_identity() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            workspaces.join(&stable_key[..16]).join(DATABASE_FILE)
+        );
+        assert!(resolved.exists(), "the old database is adopted");
+        assert!(!legacy_directory.exists(), "the old directory is moved away");
+    }
+
+    #[test]
+    fn keeps_the_legacy_database_when_no_identity_can_be_written() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+
+        let resolved = resolve_database_path(&workspaces, None, &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            workspaces.join(&legacy_key[..16]).join(DATABASE_FILE)
+        );
+    }
+
+    #[test]
+    fn prefers_the_stable_database_once_it_exists() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::create_dir_all(&stable_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "old").unwrap();
+        fs::write(stable_directory.join(DATABASE_FILE), "current").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            stable_directory.join(DATABASE_FILE),
+            "both exist, so the stable one wins"
+        );
+        assert!(legacy_directory.exists(), "the legacy database is left alone");
+    }
+
+    #[test]
+    fn keeps_a_backup_of_the_legacy_database_before_moving_it() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+
+        fs::create_dir_all(&legacy_directory).unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(resolved, stable_directory.join(DATABASE_FILE));
+        assert_eq!(
+            fs::read_to_string(&resolved).unwrap(),
+            "history",
+            "the moved database keeps the history it held"
+        );
+        assert_eq!(
+            fs::read_to_string(database_backup(&resolved)).unwrap(),
+            "history",
+            "the backup is left beside the moved database"
+        );
+    }
+
+    #[test]
+    fn still_opens_the_legacy_database_when_the_move_cannot_complete() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let workspaces = directory.path().join("workspaces");
+        let legacy_key = content_hash(r"\\?\C:\Users\kai\Writing");
+        let stable_key = content_hash("a-stable-identity");
+        let legacy_directory = workspaces.join(&legacy_key[..16]);
+        let stable_directory = workspaces.join(&stable_key[..16]);
+
+        fs::create_dir_all(&legacy_directory).unwrap();
+        // A non-empty destination cannot be renamed over, so the move fails
+        // while the stable database itself is still missing.
+        fs::create_dir_all(&stable_directory).unwrap();
+        fs::write(stable_directory.join("occupied"), "another app").unwrap();
+        fs::write(legacy_directory.join(DATABASE_FILE), "history").unwrap();
+
+        let resolved = resolve_database_path(&workspaces, Some(&stable_key), &legacy_key).unwrap();
+
+        assert_eq!(
+            resolved,
+            legacy_directory.join(DATABASE_FILE),
+            "a failed migration must never cost the user their history"
+        );
+        assert_eq!(fs::read_to_string(&resolved).unwrap(), "history");
+    }
+
+    #[test]
+    fn opens_a_healthy_activity_database() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join(DATABASE_FILE);
+        initialize_database(&Connection::open(&path).unwrap()).expect("database schema");
+
+        let database = open_database(&path).expect("a healthy database opens");
+
+        let tables: i64 = database
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'activity_events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 1, "the database is still usable after the check");
+    }
+
+    #[test]
+    fn opens_the_brand_new_database_a_first_run_creates() {
+        // The integrity check runs on every open, and on a first run the file
+        // does not exist yet: Connection::open creates a zero-length file that
+        // initialize_database has not touched. A zero-length file is a valid
+        // empty SQLite database, so this must pass -- otherwise the check
+        // would make every new workspace unopenable.
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join("nested").join(DATABASE_FILE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let database = open_database(&path).expect("a first run opens an empty database");
+
+        initialize_database(&database).expect("schema applies to the new database");
+        assert!(path.exists(), "the new workspace has its database file");
+    }
+
+    #[test]
+    fn refuses_to_open_a_corrupted_activity_database() {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        let path = directory.path().join(DATABASE_FILE);
+        fs::write(&path, "this was never a database").unwrap();
+
+        let error = open_database(&path).expect_err("a corrupt database must be refused");
+
+        assert!(
+            error.contains("corrupted"),
+            "the error must say what is wrong: {error}"
+        );
+        assert!(
+            error.contains(&format!("{DATABASE_FILE}.bak")),
+            "the error must point at the recovery copy: {error}"
+        );
+
+        let backup = database_backup(&path);
+        fs::write(&backup, "history").unwrap();
+        let with_backup = open_database(&path).expect_err("a corrupt database must be refused");
+        assert!(
+            with_backup.contains(&backup.display().to_string()),
+            "the recovery copy must be named exactly: {with_backup}"
+        );
+    }
+
+    /// Builds a workspace holding one document per named case, so the content
+    /// search is exercised against a real folder rather than a stubbed reader.
+    fn workspace_with(search_cases: &[(&str, &str)]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("temporary workspace");
+        for (relative, content) in search_cases {
+            let path = directory.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn finds_a_document_by_what_it_says_rather_than_what_it_is_called() {
+        let directory = workspace_with(&[
+            (
+                "2026-09-16 Book notes.md",
+                "---\ntags: [reading]\n---\n# Book notes\n\nThe harbourmaster keeps her own record.\n",
+            ),
+            (
+                "2026-09-15 Novel outline.md",
+                "---\ntags: [fiction]\n---\n# Novel outline\n\nA quiet coastal town watches its tides.\n",
+            ),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        // "harbourmaster" is in one body and in no file name.
+        assert_eq!(
+            search_content(&root, "harbourmaster").unwrap(),
+            vec!["2026-09-16 Book notes.md"]
+        );
+        // Sub-folders come back in the same relative form the sidebar already holds.
+        assert_eq!(
+            search_content(&root, "tides").unwrap(),
+            vec!["2026-09-15 Novel outline.md"]
+        );
+    }
+
+    #[test]
+    fn searches_document_bodies_case_insensitively() {
+        let directory = workspace_with(&[(
+            "notes.md",
+            "---\ntags: [reading]\n---\n# Notes\n\nThe Harbourmaster keeps her own record.\n",
+        )]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(search_content(&root, "HARBOURMASTER").unwrap(), vec!["notes.md"]);
+        assert_eq!(
+            search_content(&root, "  HarbourMaster  ").unwrap(),
+            vec!["notes.md"],
+            "the query is trimmed like every other search in the app"
+        );
+    }
+
+    #[test]
+    fn never_finds_a_document_by_its_front_matter_metadata() {
+        let directory = workspace_with(&[
+            (
+                "harbourmaster.md",
+                "---\ntags: [tidemaster]\ntitle: Notes\n---\n# Notes\n\nNothing to see.\n",
+            ),
+            ("plain.md", "---\ntags: [reading]\n---\n# Plain\n\nNothing to see.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        // Both tags are metadata. Neither document may be found by them.
+        assert!(
+            search_content(&root, "tidemaster").unwrap().is_empty(),
+            "a tags: block is not something the writer wrote"
+        );
+        assert!(search_content(&root, "title").unwrap().is_empty());
+        assert!(search_content(&root, "---").unwrap().is_empty());
+        // The document that does say it in its body is still found.
+        assert_eq!(
+            search_content(&root, "nothing").unwrap(),
+            vec!["harbourmaster.md", "plain.md"]
+        );
+    }
+
+    #[test]
+    fn honours_the_visibility_rules_the_folder_listing_uses() {
+        let directory = workspace_with(&[
+            ("visible.md", "# Visible\n\nA recorded tide.\n"),
+            (".hidden.md", "# Hidden\n\nA recorded tide.\n"),
+            ("node_modules/package.md", "# Installed\n\nA recorded tide.\n"),
+            (".git/objects/note.md", "# Object\n\nA recorded tide.\n"),
+            ("notes.txt", "A recorded tide, but not a document.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(
+            search_content(&root, "recorded").unwrap(),
+            vec!["visible.md"],
+            "the same dotfiles, node_modules and non-Markdown files are skipped"
+        );
+        assert_eq!(
+            markdown_files(&root).unwrap(),
+            vec!["visible.md"],
+            "searching cannot widen what the sidebar is allowed to list"
+        );
+    }
+
+    #[test]
+    fn skips_a_query_too_short_to_be_worth_the_walk() {
+        let directory = workspace_with(&[("notes.md", "# Notes\n\nTides.\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(search_content(&root, "").unwrap().is_empty());
+        assert!(search_content(&root, "   ").unwrap().is_empty());
+        assert!(search_content(&root, "t").unwrap().is_empty());
+        assert_eq!(
+            search_content(&root, "ti").unwrap(),
+            vec!["notes.md"],
+            "the floor is the same on both sides of it"
+        );
+    }
+
+    #[test]
+    fn refuses_an_absurdly_long_search_query() {
+        let directory = workspace_with(&[("notes.md", "# Notes\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(search_content(&root, &"a".repeat(MAX_CONTENT_SEARCH_CHARS + 1)).is_err());
+        assert!(search_content(
+            &root,
+            &"a".repeat(MAX_CONTENT_SEARCH_CHARS)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn leaves_file_name_matching_to_the_sidebar() {
+        let directory = workspace_with(&[(
+            "harbourmaster.md",
+            "---\ntags: [reading]\n---\n# Notes\n\nNothing about tides.\n",
+        )]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert!(
+            search_content(&root, "harbourmaster").unwrap().is_empty(),
+            "the name is already filtered in the frontend, where every path is held"
+        );
+    }
+
+    #[test]
+    fn keeps_searching_past_a_document_it_cannot_read() {
+        let directory = workspace_with(&[
+            ("broken.md", "# Broken\n\nA recorded tide.\n"),
+            ("readable.md", "# Readable\n\nA recorded tide.\n"),
+        ]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+        // A file the walker lists but cannot decode as text: not every `.md` on
+        // disk is a document Wrava or anyone else can read as one.
+        fs::write(root.join("broken.md"), [0xff, 0xfe, 0x00]).unwrap();
+
+        assert_eq!(search_content(&root, "recorded").unwrap(), vec!["readable.md"]);
+    }
+
+    #[test]
+    fn agrees_with_the_frontend_splitter_about_a_document_with_no_metadata() {
+        // `splitMarkdownDocument` in src/documentIdentity.ts leaves a document
+        // with no front matter whole, so a body that merely opens with a rule
+        // is still searchable. The two sides have documented differences; this
+        // is the case they must not disagree on.
+        let directory = workspace_with(&[("rule.md", "---\n\nJust a rule, then the tide.\n")]);
+        let root = fs::canonicalize(directory.path()).unwrap();
+
+        assert_eq!(
+            searchable_body("---\n\nJust a rule, then the tide.\n"),
+            "---\n\nJust a rule, then the tide.\n"
+        );
+        assert_eq!(search_content(&root, "tide").unwrap(), vec!["rule.md"]);
     }
 }
