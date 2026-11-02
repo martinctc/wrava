@@ -70,6 +70,10 @@ export type AnalyticsView = {
   currentWordCount: number;
   tags: TagActivity[];
   bigrams: BigramResult[];
+  // Consecutive-day writing streaks, derived from `daily`. Optional so older
+  // saved exports and backends without the fields keep working.
+  currentStreak?: number;
+  longestStreak?: number;
 };
 
 export const emptyStats: ActivityStats = {
