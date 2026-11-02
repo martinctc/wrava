@@ -13,6 +13,7 @@ export type Settings = {
   filename: FilenamePreferences;
   goals: WritingGoals;
   documentOrder: "newest" | "oldest";
+  showEmotionalCheckIn: boolean;
 };
 
 export const SETTINGS_KEY = "wrava.settings.v1";
@@ -25,6 +26,7 @@ export const defaultSettings: Settings = {
   filename: { includeDate: true, maxLength: 80 },
   goals: emptyGoals,
   documentOrder: "newest",
+  showEmotionalCheckIn: false,
 };
 
 export function validateSettings(value: unknown): Settings {
@@ -66,6 +68,12 @@ export function validateSettings(value: unknown): Settings {
     || !Number.isInteger(file.maxLength) || file.maxLength < 20 || file.maxLength > 120) {
     throw new Error("Filename length must be a whole number between 20 and 120.");
   }
+  if (data.showEmotionalCheckIn !== undefined && typeof data.showEmotionalCheckIn !== "boolean") {
+    throw new Error("Show emotional check-in must be a boolean.");
+  }
+  const showEmotionalCheckIn = data.showEmotionalCheckIn === undefined
+    ? defaultSettings.showEmotionalCheckIn
+    : data.showEmotionalCheckIn;
   return {
     theme: data.theme,
     spelling: data.spelling,
@@ -76,6 +84,7 @@ export function validateSettings(value: unknown): Settings {
     goals: { today: goalValues.today as number, week: goalValues.week as number,
       month: goalValues.month as number, year: goalValues.year as number },
     documentOrder,
+    showEmotionalCheckIn,
   };
 }
 
