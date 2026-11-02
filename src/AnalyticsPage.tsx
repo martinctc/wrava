@@ -28,6 +28,8 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
     1,
     ...analytics.documents.map((document) => document.wordsAdded),
   );
+  const currentStreak = analytics.currentStreak ?? 0;
+  const longestStreak = analytics.longestStreak ?? 0;
 
   // Serialization lives in analyticsExport.ts so it stays pure and testable; this
   // is the only DOM-touching half. The blob download path is verified in a normal
@@ -93,6 +95,16 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
           label="Best writing day"
           value={bestDay?.wordsAdded ?? 0}
           detail={bestDay ? formatDate(bestDay.date) : "No activity yet"}
+        />
+        <SummaryCard
+          label="Current streak"
+          value={currentStreak}
+          detail={`${currentStreak === 1 ? "day" : "days"} in a row`}
+        />
+        <SummaryCard
+          label="Longest streak"
+          value={longestStreak}
+          detail={`${longestStreak === 1 ? "day" : "days"}`}
         />
       </div>
 
