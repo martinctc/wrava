@@ -18,8 +18,11 @@ test("round-trips settings without letting legacy theme override them", () => {
 
 test("older settings gain autosave and editor size without losing preferences", () => {
   const legacy = { theme: "dark", spelling: "en-GB", filename: { includeDate: false, maxLength: 40 } };
+  // The migrated result is every current default with the legacy document's
+  // own preferences kept on top, so new default fields do not belong here by
+  // name and this assertion survives the next setting that is added.
   assert.deepEqual(loadSettings(storage({ [SETTINGS_KEY]: JSON.stringify(legacy) })).settings,
-    { ...legacy, autosave: true, editorFontSize: 16, goals: defaultSettings.goals, documentOrder: "newest" });
+    { ...defaultSettings, ...legacy });
   for (const editorFontSize of [11, 29, 16.5, "16", null]) {
     assert.throws(() => validateSettings({ ...defaultSettings, editorFontSize }));
   }
