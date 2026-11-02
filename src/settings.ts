@@ -3,11 +3,13 @@ import { emptyGoals, type WritingGoals } from "./writingProgress.ts";
 export type Theme = "light" | "dark";
 export type SpellingLanguage = "system" | "en-GB" | "en-US" | "off";
 export type FilenamePreferences = { includeDate: boolean; maxLength: number };
+export type FontFamily = "system" | "serif" | "monospace";
 export type Settings = {
   theme: Theme;
   spelling: SpellingLanguage;
   autosave: boolean;
   editorFontSize: number;
+  editorFontFamily: FontFamily;
   filename: FilenamePreferences;
   goals: WritingGoals;
   documentOrder: "newest" | "oldest";
@@ -19,6 +21,7 @@ export const defaultSettings: Settings = {
   spelling: "system",
   autosave: true,
   editorFontSize: 16,
+  editorFontFamily: "system",
   filename: { includeDate: true, maxLength: 80 },
   goals: emptyGoals,
   documentOrder: "newest",
@@ -64,6 +67,7 @@ export function validateSettings(value: unknown): Settings {
     spelling: data.spelling,
     autosave,
     editorFontSize,
+    editorFontFamily: data.editorFontFamily === undefined ? "system" : data.editorFontFamily,
     filename: { includeDate: file.includeDate, maxLength: file.maxLength },
     goals: { today: goalValues.today as number, week: goalValues.week as number,
       month: goalValues.month as number, year: goalValues.year as number },
