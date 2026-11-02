@@ -92,6 +92,10 @@ struct AnalyticsView {
     current_word_count: i64,
     tags: Vec<TagActivity>,
     bigrams: Vec<BigramResult>,
+    /// Consecutive days with writing activity, derived from `daily`.
+    current_streak: i64,
+    /// The longest run of consecutive active days inside the analytics window.
+    longest_streak: i64,
 }
 
 #[derive(Serialize)]
@@ -683,6 +687,7 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
         .count();
 
     let bigrams = compute_bigrams(&document_contents);
+    let streaks = compute_streaks(&daily);
 
     Ok(AnalyticsView {
       daily,
@@ -692,6 +697,8 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
       current_word_count,
       tags: tags.into_values().collect(),
       bigrams,
+      current_streak: streaks.0,
+      longest_streak: streaks.1,
     })
 }
 
@@ -744,6 +751,37 @@ const STOPWORDS: &[&str] = &[
   "passing", "passed", "sell", "selling", "sold", "require", "requiring", "required", "report", "reporting",
   "reported", "decide", "deciding", "decided", "pull", "pulling", "pulled",
 ];
+
+// Streak counting over the daily analytics window (issue #10). A day counts
+// when the writer added words on it. An inactive today does not break the
+// current streak — the day isn't over yet — but an inactive yesterday does.
+// The longest streak is the longest run of consecutive active days inside
+// the window. Returns (current, longest).
+fn compute_streaks(daily: &[DailyActivity]) -> (i64, i64) {
+    if daily.is_empty() {
+        return (0, 0);
+    }
+    let last = daily.len() - 1;
+    let mut current = 0;
+    let mut longest = 0;
+    let mut run = 0;
+    let mut current_finalized = false;
+    for (index, day) in daily.iter().enumerate().rev() {
+        if day.words_added > 0 {
+            run += 1;
+            longest = longest.max(run);
+            if !current_finalized {
+                current = run;
+            }
+        } else {
+            run = 0;
+            if index != last {
+                current_finalized = true;
+            }
+        }
+    }
+    (current, longest)
+}
 
 fn compute_bigrams(contents: &[String]) -> Vec<BigramResult> {
     let stop_set: std::collections::HashSet<&str> = STOPWORDS.iter().cloned().collect();
@@ -1448,6 +1486,51 @@ mod tests {
     fn ignores_code_blocks() {
         let words = prose_words("Real words\n\n```rust\nlet hidden = true;\n```");
         assert_eq!(words, vec!["real", "words"]);
+    }
+
+    fn streak_day(offset: usize, words_added: i64) -> DailyActivity {
+        let date = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Duration::days(offset as i64);
+        DailyActivity {
+            date: date.to_string(),
+            words_added,
+            words_deleted: 0,
+            net_change: words_added,
+            active_documents: if words_added > 0 { 1 } else { 0 },
+        }
+    }
+
+    #[test]
+    fn counts_consecutive_active_days_as_streaks() {
+        // Active, active, active: one three-day run ending today.
+        let daily = vec![streak_day(0, 10), streak_day(1, 20), streak_day(2, 30)];
+        assert_eq!(compute_streaks(&daily), (3, 3));
+
+        // Today is active and so is yesterday: the current streak is the run
+        // anchored at today, whatever gaps sit deeper in the window.
+        let daily = vec![streak_day(0, 0), streak_day(1, 10), streak_day(2, 20)];
+        assert_eq!(compute_streaks(&daily), (2, 2));
+
+        // An inactive today is forgiven — the day isn't over yet — so the
+        // current streak counts back through yesterday.
+        let daily = vec![streak_day(0, 10), streak_day(1, 20), streak_day(2, 0)];
+        assert_eq!(compute_streaks(&daily), (2, 2));
+
+        // Today active but yesterday inactive: the current run is one day,
+        // while the older pair still holds the longest streak.
+        let daily = vec![
+            streak_day(0, 10),
+            streak_day(1, 20),
+            streak_day(2, 0),
+            streak_day(3, 30),
+        ];
+        assert_eq!(compute_streaks(&daily), (1, 2));
+
+        // Today inactive is forgiven, so yesterday's single active day is the
+        // current streak; the older run across the gap does not merge with it.
+        let daily = vec![streak_day(0, 10), streak_day(1, 0), streak_day(2, 20), streak_day(3, 0)];
+        assert_eq!(compute_streaks(&daily), (1, 1));
+
+        assert_eq!(compute_streaks(&[]), (0, 0));
     }
 
     #[test]

@@ -16,6 +16,7 @@ import type {
 import { computeBigrams } from "./bigrams";
 import { documentFilename, splitMarkdownDocument, titleMarkdown } from "./documentIdentity";
 import { normalizeSearchQuery, shouldSearchContent } from "./documentSearch";
+import { computeStreaks } from "./writingStreaks";
 
 export const DEMO_WORKSPACE_ROOT = "Demo workspace (in your browser)";
 
@@ -318,6 +319,7 @@ class DemoStore {
 
     const contents = this.files().map((path) => this.documents.get(path)!.content);
     const bigrams = computeBigrams(contents);
+    const streaks = computeStreaks(daily);
 
     return {
       daily,
@@ -327,6 +329,8 @@ class DemoStore {
       currentWordCount: documents.reduce((sum, doc) => sum + doc.currentWordCount, 0),
       tags: [...tagTotals.values()],
       bigrams,
+      currentStreak: streaks.current,
+      longestStreak: streaks.longest,
     };
   }
 }
