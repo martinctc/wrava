@@ -35,9 +35,13 @@ export function validateSettings(value: unknown): Settings {
   const editorFontSize = data.editorFontSize === undefined ? defaultSettings.editorFontSize : data.editorFontSize;
   const goals = data.goals === undefined ? emptyGoals : data.goals;
   const documentOrder = data.documentOrder === undefined ? "newest" : data.documentOrder;
+  const editorFontFamily = data.editorFontFamily === undefined ? defaultSettings.editorFontFamily : data.editorFontFamily;
   if (typeof autosave !== "boolean") throw new Error("Choose whether to autosave.");
   if (typeof editorFontSize !== "number" || !Number.isInteger(editorFontSize) || editorFontSize < 12 || editorFontSize > 28) {
     throw new Error("Editor font size must be a whole number between 12 and 28.");
+  }
+  if (editorFontFamily !== "system" && editorFontFamily !== "serif" && editorFontFamily !== "monospace") {
+    throw new Error("Choose a font for the editor: system, serif, or monospace.");
   }
   if (data.theme !== "light" && data.theme !== "dark") throw new Error("Choose Light or Dark.");
   if (data.spelling !== "system" && data.spelling !== "en-GB" && data.spelling !== "en-US" && data.spelling !== "off") {
@@ -67,7 +71,7 @@ export function validateSettings(value: unknown): Settings {
     spelling: data.spelling,
     autosave,
     editorFontSize,
-    editorFontFamily: data.editorFontFamily === undefined ? "system" : data.editorFontFamily,
+    editorFontFamily,
     filename: { includeDate: file.includeDate, maxLength: file.maxLength },
     goals: { today: goalValues.today as number, week: goalValues.week as number,
       month: goalValues.month as number, year: goalValues.year as number },
