@@ -36,32 +36,47 @@ type DemoDayHistory = {
 
 const HISTORY_DAYS = 84;
 
-function frontMatter(content: string): { tags: string[]; body: string } {
+function frontMatter(content: string): { tags: string[]; emotion?: string; emotionReason?: string; body: string } {
   const match = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n)([\s\S]*)$/);
   if (!match) {
     return { tags: [], body: content };
   }
   const [, , yaml, , body] = match;
-  const tagLine = yaml.split(/\r?\n/).find((line) => line.trim().startsWith("tags:"));
-  if (!tagLine) {
-    return { tags: [], body };
+  const lines = yaml.split(/\r?\n/);
+  const tagLine = lines.find((line) => line.trim().startsWith("tags:"));
+  let tags: string[] = [];
+  if (tagLine) {
+    const value = tagLine.slice(tagLine.indexOf(":") + 1).trim();
+    tags = value
+      .replace(/^\[|\]$/g, "")
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter(Boolean);
   }
-  const value = tagLine.slice(tagLine.indexOf(":") + 1).trim();
-  const tags = value
-    .replace(/^\[|\]$/g, "")
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-  return { tags, body };
+  const read = (key: string): string | undefined => {
+    const line = lines.find((candidate) => candidate.trim().startsWith(`${key}:`));
+    if (!line) return undefined;
+    const value = line.slice(line.indexOf(":") + 1).trim().replace(/^["']|["']$/g, "");
+    return value || undefined;
+  };
+  return { tags, emotion: read("emotion"), emotionReason: read("emotion_reason"), body };
 }
 
-function withTags(content: string, tags: string[]): string {
+function withMetadata(content: string, tags: string[], emotion?: string, emotionReason?: string): string {
   const { body } = frontMatter(content);
   const cleanBody = body.replace(/^\r?\n/, "");
-  if (tags.length === 0) {
+  const trimmedEmotion = emotion?.trim();
+  const trimmedReason = trimmedEmotion ? emotionReason?.trim() : undefined;
+  const lines: string[] = [];
+  if (tags.length > 0) lines.push(`tags: [${tags.join(", ")}]`);
+  if (trimmedEmotion) {
+    lines.push(`emotion: ${trimmedEmotion}`);
+    if (trimmedReason) lines.push(`emotion_reason: ${trimmedReason}`);
+  }
+  if (lines.length === 0) {
     return cleanBody;
   }
-  return `---\ntags: [${tags.join(", ")}]\n---\n${cleanBody}`;
+  return `---\n${lines.join("\n")}\n---\n${cleanBody}`;
 }
 
 // Approximate word count: strips Markdown emphasis/heading markers, then
@@ -211,14 +226,14 @@ class DemoStore {
   read(path: string): DocumentView {
     const doc = this.documents.get(path);
     if (!doc) throw new Error(`Document not found: ${path}`);
-    const { tags } = frontMatter(doc.content);
-    return { path, content: doc.content, wordCount: countWords(doc.content), tags };
+    const { tags, emotion, emotionReason } = frontMatter(doc.content);
+    return { path, content: doc.content, wordCount: countWords(doc.content), tags, emotion, emotionReason };
   }
 
-  save(path: string, content: string, tags: string[]): DocumentResult {
+  save(path: string, content: string, tags: string[], emotion?: string, emotionReason?: string): DocumentResult {
     const doc = this.documents.get(path);
     if (!doc) throw new Error(`Document not found: ${path}`);
-    const nextContent = withTags(content, tags);
+    const nextContent = withMetadata(content, tags, emotion, emotionReason);
     const previousWords = this.baselineWordCounts.get(path) ?? 0;
     const nextWords = countWords(nextContent);
     const delta = nextWords - previousWords;
@@ -345,8 +360,8 @@ export function demoReadDocument(path: string): DocumentView {
   return store.read(path);
 }
 
-export function demoSaveDocument(path: string, content: string, tags: string[]): DocumentResult {
-  return store.save(path, content, tags);
+export function demoSaveDocument(path: string, content: string, tags: string[], emotion?: string, emotionReason?: string): DocumentResult {
+  return store.save(path, content, tags, emotion, emotionReason);
 }
 
 export function demoCreateDocument(name: string, title: string): DocumentResult {

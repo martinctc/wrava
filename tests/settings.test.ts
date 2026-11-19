@@ -47,6 +47,10 @@ test("invalid or inaccessible settings report errors explicitly", () => {
   for (const editorFontFamily of ["comic-sans", 1, null]) {
     assert.throws(() => validateSettings({ ...defaultSettings, editorFontFamily }));
   }
+  for (const showEmotionalCheckIn of ["true", 1, null]) {
+    assert.throws(() => validateSettings({ ...defaultSettings, showEmotionalCheckIn }));
+  }
+  assert.equal(validateSettings({ ...defaultSettings, showEmotionalCheckIn: true }).showEmotionalCheckIn, true);
   assert.match(loadSettings(storage({ [SETTINGS_KEY]: "not json" })).error ?? "", /Could not load/);
   assert.match(loadSettings({ getItem() { throw new Error("blocked"); } }).error ?? "", /blocked/);
 });

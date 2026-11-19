@@ -3,6 +3,23 @@ import type { FilenamePreferences } from "./settings";
 
 export const MAX_GENERATED_FILENAME_LENGTH = 80;
 
+// Recognized emotional check-in fields stored in YAML front matter.
+export type EmotionalCheckIn = { emotion?: string; emotionReason?: string };
+
+// Emotions offered by the emotional check-in picker (Apple Journal style).
+export const EMOTIONS: string[] = [
+  "happy",
+  "sad",
+  "focused",
+  "anxious",
+  "inspired",
+  "tired",
+  "grateful",
+  "stressed",
+  "creative",
+  "motivated",
+];
+
 export function documentFilename(name: string) {
   const stem = name.trim().replace(/\.md$/i, "").trim();
   if (!stem) throw new Error("Enter a name for the new document.");

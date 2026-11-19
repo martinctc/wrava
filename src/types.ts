@@ -28,6 +28,8 @@ export type DocumentView = {
   content: string;
   wordCount: number;
   tags: string[];
+  emotion?: string;
+  emotionReason?: string;
 };
 
 export type DocumentResult = {

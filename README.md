@@ -39,6 +39,7 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - **Editor font** — choose the system default, a serif, or a monospace face for both editors, with a live preview. The rest of the interface keeps the system font.
 - **Spellcheck** — defaults to system settings; choose British English (`-ise`), US English, or Off. Bundled offline dictionaries exclude code, front matter, URLs, emails, and long non-prose tokens. Right-click or Alt+Enter for suggestions; corrections are opt-in and undoable.
 - **Filename preferences** — control date prefix and max generated length (20–120 chars, 80 default) with a live example. Only future suggestions change.
+- **Emotional check-in** — optional mood picker above the editor. Pick a feeling from the built-in list and add an optional note; both are stored as `emotion` and `emotion_reason` in the document's YAML front matter, next to its tags. Off by default; existing documents are untouched until you pick a mood.
 
 ### Analytics
 - **Activity totals** — today, this week, this month, and this year; includes net document growth.

@@ -49,6 +49,10 @@ struct DocumentView {
     content: String,
     word_count: usize,
     tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    emotion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    emotion_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -218,10 +222,13 @@ fn read_document(state: State<AppState>, path: String) -> Result<DocumentView, S
     with_workspace(&state, |workspace| {
         let full_path = resolve_document_path(&workspace.root, &path)?;
         let content = fs::read_to_string(&full_path).map_err(display_error)?;
+        let (emotion, emotion_reason) = document_emotion(&content);
         Ok(DocumentView {
             path,
             word_count: prose_words(&content).len(),
             tags: document_tags(&content),
+            emotion,
+            emotion_reason,
             content,
         })
     })
@@ -233,21 +240,31 @@ fn save_document(
     path: String,
     content: String,
     tags: Vec<String>,
+    emotion: Option<String>,
+    emotion_reason: Option<String>,
 ) -> Result<CreatedDocumentView, String> {
     with_workspace(&state, |workspace| {
         let full_path = resolve_document_path(&workspace.root, &path)?;
         let tags = normalize_tags(tags);
         let updated_content = set_document_tags(&content, &tags);
+        let updated_content = set_document_emotion(
+            &updated_content,
+            emotion.as_deref(),
+            emotion_reason.as_deref(),
+        );
         AtomicFile::new(&full_path, AllowOverwrite)
             .write(|file| file.write_all(updated_content.as_bytes()))
             .map_err(display_error)?;
         accept_file(workspace, &path, &updated_content, "wrava")?;
+        let (emotion, emotion_reason) = document_emotion(&updated_content);
         Ok(CreatedDocumentView {
             workspace: workspace_view(workspace)?,
             document: DocumentView {
                 path,
                 word_count: prose_words(&updated_content).len(),
                 tags,
+                emotion,
+                emotion_reason,
                 content: updated_content,
             },
         })
@@ -291,6 +308,8 @@ fn create_workspace_document(
             path,
             word_count: prose_words(&content).len(),
             tags: Vec::new(),
+            emotion: None,
+            emotion_reason: None,
             content,
         },
     })
@@ -355,11 +374,16 @@ fn rename_document(
 
         Ok(CreatedDocumentView {
             workspace: workspace_view(workspace)?,
-            document: DocumentView {
-                path: renamed_path,
-                word_count: prose_words(&content).len(),
-                tags: document_tags(&content),
-                content,
+            document: {
+                let (emotion, emotion_reason) = document_emotion(&content);
+                DocumentView {
+                    path: renamed_path,
+                    word_count: prose_words(&content).len(),
+                    tags: document_tags(&content),
+                    emotion,
+                    emotion_reason,
+                    content,
+                }
             },
         })
     })
@@ -1098,6 +1122,104 @@ fn set_document_tags(content: &str, tags: &[String]) -> String {
     }
 }
 
+/// The emotional check-in fields a document carries, read from its front matter.
+/// A document with none of them — the overwhelming majority — returns `(None, None)`,
+/// which is exactly how it behaved before the feature existed.
+fn document_emotion(content: &str) -> (Option<String>, Option<String>) {
+    let Some((front_matter, _)) = front_matter(content) else {
+        return (None, None);
+    };
+    let mut emotion = None;
+    let mut emotion_reason = None;
+    for line in front_matter.lines() {
+        if let Some(value) = line.strip_prefix("emotion:") {
+            emotion = non_empty_yaml_value(value);
+        } else if let Some(value) = line.strip_prefix("emotion_reason:") {
+            emotion_reason = non_empty_yaml_value(value);
+        }
+    }
+    (emotion, emotion_reason)
+}
+
+/// Writes (or clears) the emotional check-in on a document, leaving tags and any
+/// other front matter untouched. An absent emotion clears both fields, so a
+/// reason can never outlive the emotion it describes.
+fn set_document_emotion(
+    content: &str,
+    emotion: Option<&str>,
+    emotion_reason: Option<&str>,
+) -> String {
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let emotion = emotion.map(str::trim).filter(|value| !value.is_empty());
+    // A reason is only meaningful alongside an emotion.
+    let emotion_reason = if emotion.is_some() {
+        emotion_reason
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+
+    let mut block = Vec::new();
+    if let Some(emotion) = emotion {
+        block.push(format!("emotion: {}", yaml_tag(emotion)));
+        if let Some(reason) = emotion_reason {
+            block.push(format!("emotion_reason: {}", yaml_tag(reason)));
+        }
+    }
+
+    if let Some((front_matter, body)) = front_matter(content) {
+        let lines = front_matter.lines().collect::<Vec<_>>();
+        let mut output = Vec::new();
+        let mut index = 0;
+        let mut replaced = false;
+        while index < lines.len() {
+            if lines[index].starts_with("emotion:") || lines[index].starts_with("emotion_reason:") {
+                if !replaced {
+                    replaced = true;
+                    output.extend(block.iter().cloned());
+                }
+                index += 1;
+            } else {
+                output.push(lines[index].to_string());
+                index += 1;
+            }
+        }
+        if !replaced {
+            output.extend(block.iter().cloned());
+        }
+        return format!(
+            "---{newline}{}{newline}---{newline}{body}",
+            output.join(newline)
+        );
+    }
+
+    if block.is_empty() {
+        content.to_string()
+    } else {
+        format!(
+            "---{newline}{}{newline}---{newline}{content}",
+            block.join(newline)
+        )
+    }
+}
+
+/// Reads a single inline YAML value, unquoting it and treating an empty value as
+/// absent. Only the inline scalar form is produced by `set_document_emotion`;
+/// this is deliberately small rather than a general YAML reader.
+fn non_empty_yaml_value(value: &str) -> Option<String> {
+    let cleaned = clean_yaml_tag(value);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 fn front_matter(content: &str) -> Option<(&str, &str)> {
     let (newline, opening_length) = if content.starts_with("---\r\n") {
         ("\r\n", 5)
@@ -1610,6 +1732,81 @@ mod tests {
             vec!["reflection".to_string(), "work".to_string()]
         );
         assert_eq!(prose_words(&updated), vec!["notes"]);
+    }
+
+    #[test]
+    fn writes_and_reads_an_emotional_check_in() {
+        let content = "---\ntags: [essay]\n---\n# Notes\n";
+        let updated = set_document_emotion(&content, Some("focused"), Some("quiet morning"));
+
+        assert_eq!(
+            document_emotion(&updated),
+            (
+                Some("focused".to_string()),
+                Some("quiet morning".to_string())
+            )
+        );
+        // Tags and body survive the new fields untouched.
+        assert_eq!(document_tags(&updated), vec!["essay".to_string()]);
+        assert!(updated.contains("# Notes"));
+    }
+
+    #[test]
+    fn clears_the_check_in_when_no_emotion_is_given() {
+        let content = "---\ntags: [essay]\nemotion: happy\nemotion_reason: sunny\n---\n# Notes\n";
+        let updated = set_document_emotion(&content, None, None);
+
+        assert_eq!(document_emotion(&updated), (None, None));
+        assert_eq!(document_tags(&updated), vec!["essay".to_string()]);
+    }
+
+    #[test]
+    fn drops_a_reason_without_an_emotion() {
+        // A reason with no emotion is not written, so a stale one can never be
+        // left behind for the analytics or a future reader to misinterpret.
+        let content = "---\nemotion: happy\nemotion_reason: sunny\n---\n# Notes\n";
+        let updated = set_document_emotion(&content, None, Some("orphaned"));
+
+        assert_eq!(document_emotion(&updated), (None, None));
+    }
+
+    #[test]
+    fn updates_an_existing_check_in_in_place() {
+        let content = "---\nemotion: happy\nemotion_reason: sunny\ntags: [essay]\n---\n# Notes\n";
+        let updated = set_document_emotion(&content, Some("tired"), None);
+
+        assert_eq!(
+            document_emotion(&updated),
+            (Some("tired".to_string()), None),
+            "the emotion is replaced and the now-absent reason is cleared"
+        );
+        assert_eq!(document_tags(&updated), vec!["essay".to_string()]);
+        assert_eq!(
+            updated.matches("emotion:").count(),
+            1,
+            "the field is replaced, not duplicated"
+        );
+    }
+
+    #[test]
+    fn leaves_a_document_without_a_check_in_whole() {
+        let content = "# Notes\n\nJust prose, no front matter.\n";
+        assert_eq!(set_document_emotion(content, None, None), content);
+    }
+
+    #[test]
+    fn adds_a_check_in_to_a_document_without_front_matter() {
+        let content = "# Notes\n";
+        let updated = set_document_emotion(content, Some("inspired"), Some("a good idea"));
+
+        assert_eq!(
+            document_emotion(&updated),
+            (
+                Some("inspired".to_string()),
+                Some("a good idea".to_string())
+            )
+        );
+        assert!(updated.ends_with("# Notes\n"));
     }
 
     #[test]

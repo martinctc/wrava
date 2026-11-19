@@ -6,7 +6,7 @@ import { isolateHistory } from "@codemirror/commands";
 import { Crepe } from "@milkdown/crepe";
 import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { closeHistory } from "@milkdown/kit/prose/history";
-import { joinMarkdownBody, suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
+import { EMOTIONS, joinMarkdownBody, suggestedFilename, splitMarkdownDocument, writingTitle, withWritingTitle } from "./documentIdentity";
 import {
   DOCUMENT_SEARCH_DEBOUNCE_MS,
   filterDocuments,
@@ -76,6 +76,8 @@ function App() {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [tagInput, setTagInput] = useState("");
+  const [emotionInput, setEmotionInput] = useState("");
+  const [emotionReasonInput, setEmotionReasonInput] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   // The documents the backend found by content, and the query that produced
   // them. Both are needed: a response is only allowed to answer the query that
@@ -98,8 +100,8 @@ function App() {
   const [restoreFailed, setRestoreFailed] = useState(false);
   const saving = useRef(false);
   const [saveError, setSaveError] = useState("");
-  const draftRef = useRef({ document, content, tagInput, editorMode });
-  draftRef.current = { document, content, tagInput, editorMode };
+  const draftRef = useRef({ document, content, tagInput, editorMode, emotionInput, emotionReasonInput });
+  draftRef.current = { document, content, tagInput, editorMode, emotionInput, emotionReasonInput };
   const [status, setStatus] = useState(loadedSettings.error ?? "Choose a folder to begin tracking your writing.");
   const title = useMemo(() => writingTitle(content), [content]);
 
@@ -215,7 +217,7 @@ function App() {
   }, []);
 
   async function chooseWorkspace() {
-    if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes and change folder?")) {
+    if (draftChanged && !window.confirm("Discard your unsaved changes and change folder?")) {
       return;
     }
     const selected = await chooseWorkspaceFolder();
@@ -244,6 +246,8 @@ function App() {
       setContent("");
       setSavedContent("");
       setTagInput("");
+      setEmotionInput("");
+      setEmotionReasonInput("");
       setDocumentSearch("");
       setFocusMode(false);
       setPage("write");
@@ -270,6 +274,8 @@ function App() {
     setContent("");
     setSavedContent("");
     setTagInput("");
+    setEmotionInput("");
+    setEmotionReasonInput("");
     setDocumentSearch("");
     setFocusMode(false);
     setRestoreFailed(false);
@@ -323,7 +329,7 @@ function App() {
   }, []);
 
   async function selectDocument(path: string) {
-    if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes?")) {
+    if (draftChanged && !window.confirm("Discard your unsaved changes?")) {
       return;
     }
     const next = await run(() => readDocument(path));
@@ -331,6 +337,8 @@ function App() {
     setContent(next.content);
     setSavedContent(next.content);
     setTagInput(next.tags.join(", "));
+    setEmotionInput(next.emotion ?? "");
+    setEmotionReasonInput(next.emotionReason ?? "");
     setRichEditorVersion((version) => version + 1);
     setStatus(`${next.wordCount.toLocaleString()} words`);
   }
@@ -338,20 +346,29 @@ function App() {
   async function saveDocument(automatic = false) {
     if (!document || busy || saving.current) return;
     const submitted = currentContent();
-    if (submitted === savedContent && !tagsChanged) return;
+    if (submitted === savedContent && !tagsChanged && !emotionChanged) return;
     const submittedTags = tagInput;
+    const submittedEmotion = parsedEmotion;
+    const submittedEmotionReason = parsedEmotionReason;
+    // The snapshot comparison uses the raw inputs, exactly as tags do, so an
+    // edit typed while the save ran is still detected. The parsed values above
+    // are what the backend receives.
+    const submittedEmotionInput = emotionInput;
+    const submittedEmotionReasonInput = emotionReasonInput;
     const path = document.path;
     saving.current = true;
     setSaveError("");
     try {
-      const saved = await run(() => backendSaveDocument(path, submitted, parsedTags));
+      const saved = await run(() => backendSaveDocument(path, submitted, parsedTags, submittedEmotion, submittedEmotionReason));
       const latest = draftRef.current;
       if (latest.document?.path !== path) return;
       const latestContent = latest.editorMode === "rich" && richEditorRef.current
         ? joinMarkdownBody(latest.content, richEditorRef.current.getMarkdown())
         : latest.content;
       // A save acknowledges its snapshot, never edits typed while it was running.
-      const unchanged = latestContent === submitted && latest.tagInput === submittedTags;
+      const unchanged = latestContent === submitted && latest.tagInput === submittedTags
+        && latest.emotionInput === submittedEmotionInput
+        && latest.emotionReasonInput === submittedEmotionReasonInput;
       setWorkspace(saved.workspace);
       setDocument(saved.document);
       setAnalytics(null);
@@ -395,6 +412,8 @@ function App() {
     setContent(result.document.content);
     setSavedContent(result.document.content);
     setTagInput(result.document.tags.join(", "));
+    setEmotionInput(result.document.emotion ?? "");
+    setEmotionReasonInput(result.document.emotionReason ?? "");
     setDocumentName("");
     setNewTitle("");
     setDocumentModalError("");
@@ -412,8 +431,7 @@ function App() {
     setAnalytics(null);
     if (
       document
-      && !contentChanged
-      && !tagsChanged
+      && !draftChanged
       && next.files.includes(document.path)
     ) {
       const refreshed = await readDocument(document.path);
@@ -421,6 +439,8 @@ function App() {
       setContent(refreshed.content);
       setSavedContent(refreshed.content);
       setTagInput(refreshed.tags.join(", "));
+      setEmotionInput(refreshed.emotion ?? "");
+      setEmotionReasonInput(refreshed.emotionReason ?? "");
       setRichEditorVersion((version) => version + 1);
     }
     setStatus("Workspace refreshed.");
@@ -428,7 +448,7 @@ function App() {
 
   async function showAnalytics() {
     if (!workspace) return;
-    if ((contentChanged || tagsChanged) && !window.confirm("Open analytics without saving your changes?")) {
+    if (draftChanged && !window.confirm("Open analytics without saving your changes?")) {
       return;
     }
     const next = await run(() => queryAnalytics());
@@ -545,24 +565,31 @@ function App() {
   const tagsChanged =
     normalizedTagInput.length !== normalizedSavedTags.length
     || normalizedTagInput.some((tag, index) => tag !== normalizedSavedTags[index]);
+  // An emotion is only sent when one is chosen; a reason without an emotion is
+  // dropped, matching the backend, so a stale reason can never linger.
+  const parsedEmotion = EMOTIONS.includes(emotionInput) ? emotionInput : undefined;
+  const parsedEmotionReason = parsedEmotion ? emotionReasonInput.trim() || undefined : undefined;
+  const emotionChanged = parsedEmotion !== (document?.emotion ?? undefined)
+    || parsedEmotionReason !== (document?.emotionReason ?? undefined);
+  const draftChanged = contentChanged || tagsChanged || emotionChanged;
 
   const saveRef = useRef(saveDocument);
   saveRef.current = saveDocument;
   useEffect(() => { setSaveError(""); }, [document?.path, settings.autosave]);
   useEffect(() => {
     if (!settings.autosave || !document || busy || saveError || settingsOpen || spellingRequest
-      || creatingDocument || page !== "write" || (!contentChanged && !tagsChanged)) return;
+      || creatingDocument || page !== "write" || !draftChanged) return;
     const timer = window.setTimeout(() => { void saveRef.current(true); }, 2000);
     return () => window.clearTimeout(timer);
-  }, [settings.autosave, document?.path, content, tagInput, contentChanged, tagsChanged,
+  }, [settings.autosave, document?.path, content, tagInput, emotionInput, emotionReasonInput, draftChanged,
     busy, saveError, settingsOpen, spellingRequest, creatingDocument, page]);
 
   useEffect(() => {
-    if (!contentChanged && !tagsChanged) return;
+    if (!draftChanged) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [contentChanged, tagsChanged]);
+  }, [draftChanged]);
 
   const shellClasses = [
     "app-shell",
@@ -629,7 +656,7 @@ function App() {
               <button
                 className="secondary-button"
                 onClick={() => {
-                  if ((contentChanged || tagsChanged) && !window.confirm("Discard your unsaved changes and create a new document?")) {
+                  if (draftChanged && !window.confirm("Discard your unsaved changes and create a new document?")) {
                     return;
                   }
                   setNewTitle("");
@@ -765,9 +792,9 @@ function App() {
                     <button
                       className="primary-button"
                       onClick={() => void saveDocument()}
-                      disabled={busy || (!contentChanged && !tagsChanged)}
+                      disabled={busy || !draftChanged}
                     >
-                      {saving.current ? "Saving…" : !contentChanged && !tagsChanged ? "Saved" : "Save"}
+                      {saving.current ? "Saving…" : !draftChanged ? "Saved" : "Save"}
                     </button>
                   </div>
                 </div>
@@ -795,6 +822,32 @@ function App() {
                     {tagsChanged ? "Included in next save" : "Saved"}
                   </span>
                 </div>
+                {settings.showEmotionalCheckIn && (
+                  <div className="emotion-editor">
+                    <label htmlFor="document-emotion">Feeling</label>
+                    <select
+                      id="document-emotion"
+                      value={emotionInput}
+                      onChange={(event) => setEmotionInput(event.currentTarget.value)}
+                    >
+                      <option value="">No check-in</option>
+                      {EMOTIONS.map((emotion) => (
+                        <option key={emotion} value={emotion}>{emotion}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      value={emotionReasonInput}
+                      onChange={(event) => setEmotionReasonInput(event.currentTarget.value)}
+                      placeholder="What's behind it? (optional)"
+                      aria-label="Reason for this feeling"
+                      disabled={!emotionInput}
+                    />
+                    <span className={emotionChanged ? "tag-save-state changed" : "tag-save-state"}>
+                      {emotionChanged ? "Included in next save" : "Saved"}
+                    </span>
+                  </div>
+                )}
                 <div className="writing-surface">
                   {editorMode === "source" ? (
                     <CodeMirror
@@ -841,7 +894,7 @@ function App() {
         <span className={busy ? "status-dot busy" : "status-dot"} />
         <span>{busy ? "Working…" : status}</span>
         {saveError && <span role="alert">{saveError}</span>}
-        {document && (contentChanged || tagsChanged) && <span className="unsaved">Unsaved changes</span>}
+        {document && draftChanged && <span className="unsaved">Unsaved changes</span>}
       </footer>
 
       {settingsOpen && <SettingsPanel settings={settings} onSave={saveSettings} onClose={() => setSettingsOpen(false)} />}
