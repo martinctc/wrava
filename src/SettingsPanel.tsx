@@ -79,7 +79,16 @@ export function SettingsPanel({ settings, onSave, onClose }: {
           <input id="setting-font-size" type="range" min={12} max={28} step={1}
             value={draft.editorFontSize} aria-valuetext={`${draft.editorFontSize} pixels`}
             onChange={(event) => setDraft({ ...draft, editorFontSize: Number(event.currentTarget.value) })} />
-          <div className="font-size-preview" style={{ fontSize: `${draft.editorFontSize}px` }}>A little space for your next idea.</div>
+          <label htmlFor="setting-font-family">Editor font</label>
+          <select id="setting-font-family" value={draft.editorFontFamily} onChange={(event) =>
+            setDraft(validateSettings({ ...draft, editorFontFamily: event.currentTarget.value }))}>
+            <option value="system">System default</option>
+            <option value="serif">Serif</option>
+            <option value="monospace">Monospace</option>
+          </select>
+          <div className="font-size-preview" data-editor-font={draft.editorFontFamily} style={{
+            fontSize: `${draft.editorFontSize}px`,
+          }}>A little space for your next idea.</div>
           <p>Applies to both editors. The rest of the interface stays the same size.</p>
         </fieldset>
         <fieldset disabled={saving}>

@@ -38,7 +38,7 @@
 .goal-settings-grid input { display: block; margin-top: 6px; }
 .settings-checkbox input { accent-color: #52765a; }
 .settings-panel input[type="range"] { width: 100%; accent-color: #52765a; }
-.font-size-preview { margin-top: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.font-size-preview { margin-top: 12px; font-family: var(--editor-font-family); line-height: 1.75; overflow-wrap: anywhere; }
 .filename-preview { display: block; padding: 10px; border-radius: 7px; background: #e7eee4; font-size: 11px; overflow-wrap: anywhere; }
 .settings-panel .settings-error, .spelling-menu .settings-error { color: #a33e35; }
 .settings-panel :is(select, input, button):focus-visible,

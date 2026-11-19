@@ -6,6 +6,22 @@
   text-rendering: optimizeLegibility;
 }
 
+/* Single source of truth for the editor font stacks. The selectors are not
+   scoped to :root so the Settings preview can carry its own data-editor-font
+   and resolve the same variable. :root defaults to the system stack. */
+:root,
+[data-editor-font="system"] {
+  --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+[data-editor-font="serif"] {
+  --editor-font-family: Georgia, Cambria, "Times New Roman", Times, serif;
+}
+
+[data-editor-font="monospace"] {
+  --editor-font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -711,7 +727,7 @@ button:disabled {
 .writing-surface .cm-editor {
   height: 100%;
   background: #fffefb;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--editor-font-family);
   font-size: var(--editor-font-size, 16px);
   line-height: 1.75;
 }
@@ -748,7 +764,7 @@ button:disabled {
   margin: 0 auto;
   padding: 30px 36px 70px;
   outline: none;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: var(--editor-font-family);
   font-size: var(--editor-font-size, 16px);
   line-height: 1.75;
   overflow-wrap: anywhere;

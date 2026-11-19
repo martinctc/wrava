@@ -12,14 +12,17 @@ test("defaults to system spelling and migrates an existing theme preference", ()
 });
 
 test("round-trips settings without letting legacy theme override them", () => {
-  const settings = { ...defaultSettings, theme: "light", spelling: "en-GB", autosave: false, editorFontSize: 24, filename: { includeDate: false, maxLength: 40 } };
+  const settings = { ...defaultSettings, theme: "light", spelling: "en-GB", autosave: false, editorFontSize: 24, editorFontFamily: "serif", filename: { includeDate: false, maxLength: 40 } };
   assert.deepEqual(loadSettings(storage({ [SETTINGS_KEY]: JSON.stringify(settings), "wrava.theme": "dark" })).settings, settings);
 });
 
 test("older settings gain autosave and editor size without losing preferences", () => {
   const legacy = { theme: "dark", spelling: "en-GB", filename: { includeDate: false, maxLength: 40 } };
+  // The migrated result is every current default with the legacy document's
+  // own preferences kept on top, so new default fields do not belong here by
+  // name and this assertion survives the next setting that is added.
   assert.deepEqual(loadSettings(storage({ [SETTINGS_KEY]: JSON.stringify(legacy) })).settings,
-    { ...legacy, autosave: true, editorFontSize: 16, goals: defaultSettings.goals, documentOrder: "newest" });
+    { ...defaultSettings, ...legacy });
   for (const editorFontSize of [11, 29, 16.5, "16", null]) {
     assert.throws(() => validateSettings({ ...defaultSettings, editorFontSize }));
   }
@@ -41,6 +44,9 @@ test("invalid or inaccessible settings report errors explicitly", () => {
     assert.throws(() => validateSettings({ ...defaultSettings, goals }));
   }
   assert.throws(() => validateSettings({ ...defaultSettings, documentOrder: "modified" }));
+  for (const editorFontFamily of ["comic-sans", 1, null]) {
+    assert.throws(() => validateSettings({ ...defaultSettings, editorFontFamily }));
+  }
   assert.match(loadSettings(storage({ [SETTINGS_KEY]: "not json" })).error ?? "", /Could not load/);
   assert.match(loadSettings({ getItem() { throw new Error("blocked"); } }).error ?? "", /blocked/);
 });

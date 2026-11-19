@@ -114,6 +114,10 @@ function App() {
     window.document.documentElement.style.setProperty("--editor-font-size", `${settings.editorFontSize}px`);
   }, [settings.editorFontSize]);
 
+  useLayoutEffect(() => {
+    window.document.documentElement.dataset.editorFont = settings.editorFontFamily;
+  }, [settings.editorFontFamily]);
+
   useEffect(() => {
     let active = true;
     const language = settings.spelling;
