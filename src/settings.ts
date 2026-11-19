@@ -14,6 +14,7 @@ export type Settings = {
   goals: WritingGoals;
   documentOrder: "newest" | "oldest";
   showEmotionalCheckIn: boolean;
+  showSessionTimer: boolean;
 };
 
 export const SETTINGS_KEY = "wrava.settings.v1";
@@ -27,6 +28,7 @@ export const defaultSettings: Settings = {
   goals: emptyGoals,
   documentOrder: "newest",
   showEmotionalCheckIn: false,
+  showSessionTimer: false,
 };
 
 export function validateSettings(value: unknown): Settings {
@@ -74,6 +76,12 @@ export function validateSettings(value: unknown): Settings {
   const showEmotionalCheckIn = data.showEmotionalCheckIn === undefined
     ? defaultSettings.showEmotionalCheckIn
     : data.showEmotionalCheckIn;
+  if (data.showSessionTimer !== undefined && typeof data.showSessionTimer !== "boolean") {
+    throw new Error("Show session timer must be a boolean.");
+  }
+  const showSessionTimer = data.showSessionTimer === undefined
+    ? defaultSettings.showSessionTimer
+    : data.showSessionTimer;
   return {
     theme: data.theme,
     spelling: data.spelling,
@@ -85,6 +93,7 @@ export function validateSettings(value: unknown): Settings {
       month: goalValues.month as number, year: goalValues.year as number },
     documentOrder,
     showEmotionalCheckIn,
+    showSessionTimer,
   };
 }
 

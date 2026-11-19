@@ -51,6 +51,10 @@ test("invalid or inaccessible settings report errors explicitly", () => {
     assert.throws(() => validateSettings({ ...defaultSettings, showEmotionalCheckIn }));
   }
   assert.equal(validateSettings({ ...defaultSettings, showEmotionalCheckIn: true }).showEmotionalCheckIn, true);
+  for (const showSessionTimer of ["true", 1, null]) {
+    assert.throws(() => validateSettings({ ...defaultSettings, showSessionTimer }));
+  }
+  assert.equal(validateSettings({ ...defaultSettings, showSessionTimer: true }).showSessionTimer, true);
   assert.match(loadSettings(storage({ [SETTINGS_KEY]: "not json" })).error ?? "", /Could not load/);
   assert.match(loadSettings({ getItem() { throw new Error("blocked"); } }).error ?? "", /blocked/);
 });
