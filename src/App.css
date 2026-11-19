@@ -1314,6 +1314,15 @@ button:disabled {
   background: #315b3a;
 }
 
+.activity-cell.in-streak {
+  outline: 2px solid #9a7550;
+  outline-offset: 1px;
+}
+
+[data-theme="dark"] .activity-cell.in-streak {
+  outline-color: #d6b38b;
+}
+
 .consistency-note {
   margin: 17px 0 0;
   color: #686e65;

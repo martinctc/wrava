@@ -96,6 +96,10 @@ struct AnalyticsView {
     current_word_count: i64,
     tags: Vec<TagActivity>,
     bigrams: Vec<BigramResult>,
+    /// Consecutive days with writing activity, derived from `daily`.
+    current_streak: i64,
+    /// The longest run of consecutive active days inside the analytics window.
+    longest_streak: i64,
 }
 
 #[derive(Serialize)]
@@ -707,6 +711,11 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
         .count();
 
     let bigrams = compute_bigrams(&document_contents);
+    // Current streak is anchored to today over the analytics window; the longest
+    // streak is all-time, computed from the full activity history rather than the
+    // 84-day slice, so a writer's best run is never clipped by the window.
+    let current_streak = compute_current_streak(&daily);
+    let longest_streak = compute_longest_streak(database)?;
 
     Ok(AnalyticsView {
       daily,
@@ -716,6 +725,8 @@ fn analytics_view(database: &Connection) -> Result<AnalyticsView, String> {
       current_word_count,
       tags: tags.into_values().collect(),
       bigrams,
+      current_streak,
+      longest_streak,
     })
 }
 
@@ -768,6 +779,68 @@ const STOPWORDS: &[&str] = &[
   "passing", "passed", "sell", "selling", "sold", "require", "requiring", "required", "report", "reporting",
   "reported", "decide", "deciding", "decided", "pull", "pulling", "pulled",
 ];
+
+// Streak counting (issue #10). A day "counts" when the writer added words on it.
+// The two streaks answer different questions:
+//
+//   * current_streak — how long is the writer's *active* run right now. An
+//     inactive today does not break it (the day isn't over yet), but an inactive
+//     yesterday does. Computed over the recent daily window, which always
+//     includes today, so anchoring to its last element is correct.
+//   * longest_streak — the writer's all-time best run, computed from the entire
+//     recorded history rather than the 84-day window, so a run that predates the
+//     window is still remembered.
+
+fn compute_current_streak(daily: &[DailyActivity]) -> i64 {
+    let Some(last) = daily.len().checked_sub(1) else {
+        return 0;
+    };
+    let mut current = 0;
+    let mut finalized = false;
+    for (index, day) in daily.iter().enumerate().rev() {
+        if day.words_added > 0 {
+            if !finalized {
+                current += 1;
+            }
+        } else {
+            // Only the window's final day (today) is forgiven as incomplete.
+            if index != last {
+                finalized = true;
+            }
+        }
+    }
+    current
+}
+
+/// The all-time longest run of consecutive active calendar days, from every
+/// recorded activity event rather than just the analytics window. Dates are
+/// ordered and de-duplicated so a day with several events counts once.
+fn compute_longest_streak(database: &Connection) -> Result<i64, String> {
+    let mut statement = database
+        .prepare(
+            "SELECT DISTINCT local_date FROM activity_events
+             WHERE words_added > 0
+             ORDER BY local_date",
+        )
+        .map_err(display_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(display_error)?;
+    let mut longest = 0_i64;
+    let mut run = 0_i64;
+    let mut previous: Option<NaiveDate> = None;
+    for row in rows {
+        let raw = row.map_err(display_error)?;
+        let date = NaiveDate::parse_from_str(&raw, "%Y-%m-%d").map_err(display_error)?;
+        run = match previous {
+            Some(prev) if (date - prev).num_days() == 1 => run + 1,
+            _ => 1,
+        };
+        longest = longest.max(run);
+        previous = Some(date);
+    }
+    Ok(longest)
+}
 
 fn compute_bigrams(contents: &[String]) -> Vec<BigramResult> {
     let stop_set: std::collections::HashSet<&str> = STOPWORDS.iter().cloned().collect();
@@ -1570,6 +1643,100 @@ mod tests {
     fn ignores_code_blocks() {
         let words = prose_words("Real words\n\n```rust\nlet hidden = true;\n```");
         assert_eq!(words, vec!["real", "words"]);
+    }
+
+    fn streak_day(offset: usize, words_added: i64) -> DailyActivity {
+        let date =
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Duration::days(offset as i64);
+        DailyActivity {
+            date: date.to_string(),
+            words_added,
+            words_deleted: 0,
+            net_change: words_added,
+            active_documents: if words_added > 0 { 1 } else { 0 },
+        }
+    }
+
+    #[test]
+    fn current_streak_counts_back_from_today_with_a_grace_day() {
+        // Active, active, active: a three-day run ending today.
+        let daily = vec![streak_day(0, 10), streak_day(1, 20), streak_day(2, 30)];
+        assert_eq!(compute_current_streak(&daily), 3);
+
+        // Today is active and so is yesterday: the run is anchored at today,
+        // whatever gaps sit deeper in the window.
+        let daily = vec![streak_day(0, 0), streak_day(1, 10), streak_day(2, 20)];
+        assert_eq!(compute_current_streak(&daily), 2);
+
+        // An inactive today is forgiven — the day isn't over yet — so the run
+        // counts back through yesterday.
+        let daily = vec![streak_day(0, 10), streak_day(1, 20), streak_day(2, 0)];
+        assert_eq!(compute_current_streak(&daily), 2);
+
+        // Today active but yesterday inactive: the current run is one day.
+        let daily = vec![
+            streak_day(0, 10),
+            streak_day(1, 20),
+            streak_day(2, 0),
+            streak_day(3, 30),
+        ];
+        assert_eq!(compute_current_streak(&daily), 1);
+
+        // An inactive today AND yesterday: the grace covers only one day, so the
+        // current streak is zero.
+        let daily = vec![
+            streak_day(0, 10),
+            streak_day(1, 20),
+            streak_day(2, 0),
+            streak_day(3, 0),
+        ];
+        assert_eq!(compute_current_streak(&daily), 0);
+
+        assert_eq!(compute_current_streak(&[]), 0);
+    }
+
+    #[test]
+    fn longest_streak_is_all_time_not_window_limited() {
+        let database = Connection::open_in_memory().expect("in-memory database");
+        initialize_database(&database).expect("database schema");
+        let mut workspace = Workspace {
+            root: PathBuf::new(),
+            database,
+        };
+        // Insert activity on specific calendar dates directly, so the all-time
+        // run can be set independently of "today" and the 84-day window.
+        let insert = |workspace: &Workspace, date: &str, added: i64| {
+            workspace
+                .database
+                .execute(
+                    "INSERT INTO activity_events
+                     (path, local_date, source, words_added, words_deleted, net_change, created_at)
+                     VALUES ('draft.md', ?1, 'wrava', ?2, 0, ?2, ?1)",
+                    params![date, added],
+                )
+                .unwrap();
+        };
+        // Two separate days now, then a five-day run well before the window.
+        insert(&workspace, "2026-11-18", 5);
+        insert(&workspace, "2026-11-19", 5);
+        for day in 1..=5 {
+            insert(&workspace, &format!("2026-01-{day:02}"), 5);
+        }
+        // A single duplicated day counts once, not twice.
+        insert(&workspace, "2026-01-03", 9);
+
+        assert_eq!(
+            compute_longest_streak(&workspace.database).unwrap(),
+            5,
+            "the all-time longest run is found regardless of the analytics window"
+        );
+    }
+
+    #[test]
+    fn longest_streak_is_zero_without_any_active_days() {
+        let database = Connection::open_in_memory().expect("in-memory database");
+        initialize_database(&database).expect("database schema");
+        assert_eq!(compute_longest_streak(&database).unwrap(), 0);
     }
 
     #[test]

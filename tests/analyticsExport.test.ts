@@ -146,6 +146,8 @@ test("each dataset round-trips every field it owns", () => {
     ["wordsAdded", "120"],
     ["wordsDeleted", "35"],
     ["netChange", "85"],
+    ["currentStreak", "0"],
+    ["longestStreak", "0"],
   ]);
 });
 
@@ -249,6 +251,7 @@ test("an empty workspace still produces a valid file, not undefined", () => {
     ["activeDays", "0"], ["activeDocuments", "0"], ["currentWordCount", "0"],
     ["dailyEntries", "0"], ["documentEntries", "0"], ["tagEntries", "0"], ["phraseEntries", "0"],
     ["wordsAdded", "0"], ["wordsDeleted", "0"], ["netChange", "0"],
+    ["currentStreak", "0"], ["longestStreak", "0"],
   ]);
   assert.doesNotThrow(() => JSON.parse(analyticsToJson(empty)));
 });
@@ -256,7 +259,7 @@ test("an empty workspace still produces a valid file, not undefined", () => {
 test("sections are separated by a blank line and records use CRLF", () => {
   const csv = analyticsToCsv(view);
   assert.ok(csv.startsWith("# Summary\r\n"));
-  assert.ok(csv.includes("netChange,85\r\n\r\n# Daily activity\r\n"));
+  assert.ok(csv.includes("longestStreak,0\r\n\r\n# Daily activity\r\n"));
   assert.ok(csv.endsWith("\"morning, evening\",7\r\n"));
   assert.equal(csv.includes("\n\n"), false);
   assert.equal(csv.replaceAll("\r\n", "").includes("\n"), false);
