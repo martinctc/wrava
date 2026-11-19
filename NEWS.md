@@ -8,6 +8,11 @@ core feature set is still settling.
 
 ### Added
 
+- An optional emotional check-in: turn it on in Settings → Writing and a mood
+  picker appears above the editor. Choose how a session felt and add an optional
+  note; both are saved as `emotion` and `emotion_reason` in the document's front
+  matter, alongside its tags. Existing documents are unaffected until you pick a
+  mood, and choosing "No check-in" clears it again.
 - An editor font control in Settings (Settings → Writing) to switch both editors
   between the system default, a serif, and a monospace face. The live preview
   shows the chosen font at the current text size.

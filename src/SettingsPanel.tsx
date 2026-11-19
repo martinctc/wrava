@@ -75,6 +75,12 @@ export function SettingsPanel({ settings, onSave, onClose }: {
             Autosave
           </label>
           <p>Save writing and tags after two seconds without editing. You can still save immediately with Ctrl+S.</p>
+          <label className="settings-checkbox">
+            <input type="checkbox" checked={draft.showEmotionalCheckIn} onChange={(event) =>
+              setDraft({ ...draft, showEmotionalCheckIn: event.currentTarget.checked })} />
+            Emotional check-in
+          </label>
+          <p>Show an optional mood picker above the editor so you can note how a writing session felt. The choice is saved in the document's front matter and never required.</p>
           <label htmlFor="setting-font-size">Editor text size: {draft.editorFontSize} px</label>
           <input id="setting-font-size" type="range" min={12} max={28} step={1}
             value={draft.editorFontSize} aria-valuetext={`${draft.editorFontSize} pixels`}

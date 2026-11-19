@@ -94,9 +94,11 @@ export async function saveDocument(
   path: string,
   content: string,
   tags: string[],
+  emotion?: string,
+  emotionReason?: string,
 ): Promise<DocumentResult> {
-  if (isDemoMode()) return demoSaveDocument(path, content, tags);
-  return invoke<DocumentResult>("save_document", { path, content, tags });
+  if (isDemoMode()) return demoSaveDocument(path, content, tags, emotion, emotionReason);
+  return invoke<DocumentResult>("save_document", { path, content, tags, emotion, emotionReason });
 }
 
 export async function createDocument(name: string, title: string): Promise<DocumentResult> {
