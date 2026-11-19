@@ -8,6 +8,11 @@ core feature set is still settling.
 
 ### Added
 
+- Writing streaks on the Analytics page: a current-streak and an all-time
+  longest-streak summary, plus the current run outlined on the consistency
+  calendar. A day counts when you added words; an inactive today doesn't break
+  the streak, and the longest streak is computed from your full history rather
+  than the 12-week window.
 - An optional writing-session timer: turn it on in Settings → Writing and a
   Pomodoro-style countdown appears in the topbar. Pick a 25- or 50-minute preset
   or a custom length, then start, pause, resume, or reset it; a progress bar fills

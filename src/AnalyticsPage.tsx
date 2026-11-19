@@ -15,6 +15,7 @@ import {
   analyticsToJson,
 } from "./analyticsExport.ts";
 import type { AnalyticsView } from "./types";
+import { currentStreakDates } from "./writingStreaks";
 
 export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
   const [exportStatus, setExportStatus] = useState("");
@@ -30,6 +31,7 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
   );
   const currentStreak = analytics.currentStreak ?? 0;
   const longestStreak = analytics.longestStreak ?? 0;
+  const streakDates = new Set(currentStreakDates(analytics.daily));
 
   // Serialization lives in analyticsExport.ts so it stays pure and testable; this
   // is the only DOM-touching half. The blob download path is verified in a normal
@@ -104,7 +106,7 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
         <SummaryCard
           label="Longest streak"
           value={longestStreak}
-          detail={`${longestStreak === 1 ? "day" : "days"}`}
+          detail={longestStreak === 1 ? "day · all time" : "days · all time"}
         />
       </div>
 
@@ -190,20 +192,22 @@ export function AnalyticsPage({ analytics }: { analytics: AnalyticsView }) {
           <div className="card-heading">
             <div>
               <h2>Consistency</h2>
-              <p>Each square is one day</p>
+              <p>Each square is one day · outlined squares are your current streak</p>
             </div>
           </div>
           <div className="activity-grid" aria-label="Writing activity heatmap">
             {analytics.daily.map((day) => (
               <span
                 key={day.date}
-                className={`activity-cell level-${activityLevel(day.wordsAdded)}`}
-                title={`${formatDate(day.date)}: ${day.wordsAdded.toLocaleString()} words added`}
+                className={`activity-cell level-${activityLevel(day.wordsAdded)}${streakDates.has(day.date) ? " in-streak" : ""}`}
+                title={`${formatDate(day.date)}: ${day.wordsAdded.toLocaleString()} words added${streakDates.has(day.date) ? " · current streak" : ""}`}
               />
             ))}
           </div>
           <p className="consistency-note">
             You wrote on <strong>{analytics.activeDays}</strong> of the last 84 days.
+            {" "}Current streak: <strong>{currentStreak}</strong> day{currentStreak === 1 ? "" : "s"}.
+            {" "}Longest ever: <strong>{longestStreak}</strong> day{longestStreak === 1 ? "" : "s"}.
           </p>
         </article>
 

@@ -92,6 +92,8 @@ export function analyticsCsvSections(analytics: AnalyticsView): CsvSection[] {
         ["wordsAdded", daily.reduce((sum, day) => sum + day.wordsAdded, 0)],
         ["wordsDeleted", daily.reduce((sum, day) => sum + day.wordsDeleted, 0)],
         ["netChange", daily.reduce((sum, day) => sum + day.netChange, 0)],
+        ["currentStreak", analytics.currentStreak ?? 0],
+        ["longestStreak", analytics.longestStreak ?? 0],
       ],
     },
     {
