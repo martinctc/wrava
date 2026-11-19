@@ -1,14 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { suggestedFilename } from "./documentIdentity";
-import { validateSettings, type FontFamily, type Settings } from "./settings";
-
-// Kept in step with the --editor-font-family values in App.css so the preview
-// shows the same stack the editors will use.
-const FONT_FAMILY_STACKS: Record<FontFamily, string> = {
-  system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
-  serif: 'Georgia, Cambria, "Times New Roman", Times, serif',
-  monospace: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
-};
+import { validateSettings, type Settings } from "./settings";
 
 export function SettingsPanel({ settings, onSave, onClose }: {
   settings: Settings;
@@ -94,9 +86,8 @@ export function SettingsPanel({ settings, onSave, onClose }: {
             <option value="serif">Serif</option>
             <option value="monospace">Monospace</option>
           </select>
-          <div className="font-size-preview" style={{
+          <div className="font-size-preview" data-editor-font={draft.editorFontFamily} style={{
             fontSize: `${draft.editorFontSize}px`,
-            fontFamily: FONT_FAMILY_STACKS[draft.editorFontFamily],
           }}>A little space for your next idea.</div>
           <p>Applies to both editors. The rest of the interface stays the same size.</p>
         </fieldset>
