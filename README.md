@@ -36,6 +36,7 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - **Appearance** — instant Light/Dark switch; Settings panel remembers choices per device.
 - **Autosave** — saves writing and tags after a 2-second pause (default on). Manual save and Ctrl+S work immediately. Failed saves show a retry error. (Demo saves only in memory; reload clears it.)
 - **Editor size** — text-size slider from 12 to 28 px (16 px default) affects both editors only.
+- **Editor font** — choose the system default, a serif, or a monospace face for both editors, with a live preview. The rest of the interface keeps the system font.
 - **Spellcheck** — defaults to system settings; choose British English (`-ise`), US English, or Off. Bundled offline dictionaries exclude code, front matter, URLs, emails, and long non-prose tokens. Right-click or Alt+Enter for suggestions; corrections are opt-in and undoable.
 - **Filename preferences** — control date prefix and max generated length (20–120 chars, 80 default) with a live example. Only future suggestions change.
 

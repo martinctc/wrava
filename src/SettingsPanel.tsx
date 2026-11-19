@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { suggestedFilename } from "./documentIdentity";
-import { validateSettings, type Settings } from "./settings";
+import { validateSettings, type FontFamily, type Settings } from "./settings";
+
+// Kept in step with the --editor-font-family values in App.css so the preview
+// shows the same stack the editors will use.
+const FONT_FAMILY_STACKS: Record<FontFamily, string> = {
+  system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif',
+  serif: 'Georgia, Cambria, "Times New Roman", Times, serif',
+  monospace: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+};
 
 export function SettingsPanel({ settings, onSave, onClose }: {
   settings: Settings;
@@ -79,7 +87,17 @@ export function SettingsPanel({ settings, onSave, onClose }: {
           <input id="setting-font-size" type="range" min={12} max={28} step={1}
             value={draft.editorFontSize} aria-valuetext={`${draft.editorFontSize} pixels`}
             onChange={(event) => setDraft({ ...draft, editorFontSize: Number(event.currentTarget.value) })} />
-          <div className="font-size-preview" style={{ fontSize: `${draft.editorFontSize}px` }}>A little space for your next idea.</div>
+          <label htmlFor="setting-font-family">Editor font</label>
+          <select id="setting-font-family" value={draft.editorFontFamily} onChange={(event) =>
+            setDraft(validateSettings({ ...draft, editorFontFamily: event.currentTarget.value }))}>
+            <option value="system">System default</option>
+            <option value="serif">Serif</option>
+            <option value="monospace">Monospace</option>
+          </select>
+          <div className="font-size-preview" style={{
+            fontSize: `${draft.editorFontSize}px`,
+            fontFamily: FONT_FAMILY_STACKS[draft.editorFontFamily],
+          }}>A little space for your next idea.</div>
           <p>Applies to both editors. The rest of the interface stays the same size.</p>
         </fieldset>
         <fieldset disabled={saving}>

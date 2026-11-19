@@ -4,6 +4,14 @@ This file tracks user-facing changes. Wrava follows [Semantic
 Versioning](https://semver.org/); the version stays below `1.0.0` while the
 core feature set is still settling.
 
+## Unreleased
+
+### Added
+
+- An editor font control in Settings (Settings → Writing) to switch both editors
+  between the system default, a serif, and a monospace face. The live preview
+  shows the chosen font at the current text size.
+
 ## 0.1.2 - 2026-10-12
 
 ### Added

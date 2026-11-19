@@ -12,7 +12,7 @@ test("defaults to system spelling and migrates an existing theme preference", ()
 });
 
 test("round-trips settings without letting legacy theme override them", () => {
-  const settings = { ...defaultSettings, theme: "light", spelling: "en-GB", autosave: false, editorFontSize: 24, filename: { includeDate: false, maxLength: 40 } };
+  const settings = { ...defaultSettings, theme: "light", spelling: "en-GB", autosave: false, editorFontSize: 24, editorFontFamily: "serif", filename: { includeDate: false, maxLength: 40 } };
   assert.deepEqual(loadSettings(storage({ [SETTINGS_KEY]: JSON.stringify(settings), "wrava.theme": "dark" })).settings, settings);
 });
 
