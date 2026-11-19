@@ -20,6 +20,7 @@ import { ActivityStrip } from "./ActivityStrip";
 import { AnalyticsPage } from "./AnalyticsPage";
 import { InlineNameEditor } from "./InlineNameEditor";
 import { RichMarkdownEditor } from "./RichMarkdownEditor";
+import { SessionTimer } from "./SessionTimerWidget";
 import { SettingsPanel } from "./SettingsPanel";
 import { SpellingMenu } from "./SpellingMenu";
 import { WelcomePanel } from "./WelcomePanel";
@@ -636,6 +637,9 @@ function App() {
           </nav>
         )}
         <div className="topbar-actions">
+          {workspace && settings.showSessionTimer && (
+            <SessionTimer onFinish={setStatus} />
+          )}
           <button className="icon-button theme-toggle" onClick={toggleTheme}
             aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
             title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}>

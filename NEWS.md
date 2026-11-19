@@ -8,6 +8,11 @@ core feature set is still settling.
 
 ### Added
 
+- An optional writing-session timer: turn it on in Settings → Writing and a
+  Pomodoro-style countdown appears in the topbar. Pick a 25- or 50-minute preset
+  or a custom length, then start, pause, resume, or reset it; a progress bar fills
+  as the session runs and a quiet message marks its end. Nothing is recorded or
+  enforced, and it stays out of the way until you start it.
 - An optional emotional check-in: turn it on in Settings → Writing and a mood
   picker appears above the editor. Choose how a session felt and add an optional
   note; both are saved as `emotion` and `emotion_reason` in the document's front

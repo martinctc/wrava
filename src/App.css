@@ -81,6 +81,95 @@ button {
   gap: 12px;
 }
 
+.session-timer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid #dcddd6;
+  border-radius: 9px;
+  background: #fcfbf7;
+}
+
+.session-timer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border: 0;
+  color: #3c413b;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.session-timer-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 4.5ch;
+}
+
+.session-timer-progress {
+  width: 64px;
+  height: 5px;
+  border-radius: 3px;
+  background: #e4e7de;
+  overflow: hidden;
+}
+
+.session-timer-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: #52765a;
+  transition: width 0.25s linear;
+}
+
+.session-timer[data-status="finished"] .session-timer-clock { color: #9a6638; }
+
+.session-timer-preset select,
+.session-timer-custom {
+  padding: 4px 6px;
+  border: 1px solid #dcddd6;
+  border-radius: 6px;
+  color: inherit;
+  background: white;
+  font: inherit;
+  font-size: 11px;
+}
+
+.session-timer-custom { width: 64px; }
+
+.session-timer-reset {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  color: #71766e;
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-timer-reset:hover { color: #3c413b; }
+
+[data-theme="dark"] .session-timer {
+  color: #e2e7df;
+  background: var(--dark-raised);
+  border-color: var(--dark-border);
+}
+
+[data-theme="dark"] .session-timer-progress { background: var(--dark-border); }
+[data-theme="dark"] .session-timer-progress span { background: var(--dark-accent); }
+
+[data-theme="dark"] :is(.session-timer-preset select, .session-timer-custom) {
+  color: #e2e7df;
+  background: var(--dark-editor);
+  border-color: var(--dark-border);
+}
+
+[data-theme="dark"] .session-timer-toggle { color: #e2e7df; }
+[data-theme="dark"] .session-timer[data-status="finished"] .session-timer-clock { color: #d6b38b; }
+
 .page-tabs {
   display: flex;
   align-self: stretch;

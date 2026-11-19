@@ -40,6 +40,7 @@ browser (no install, nothing is saved) · [Landing page](https://martinctc.githu
 - **Spellcheck** — defaults to system settings; choose British English (`-ise`), US English, or Off. Bundled offline dictionaries exclude code, front matter, URLs, emails, and long non-prose tokens. Right-click or Alt+Enter for suggestions; corrections are opt-in and undoable.
 - **Filename preferences** — control date prefix and max generated length (20–120 chars, 80 default) with a live example. Only future suggestions change.
 - **Emotional check-in** — optional mood picker above the editor. Pick a feeling from the built-in list and add an optional note; both are stored as `emotion` and `emotion_reason` in the document's YAML front matter, next to its tags. Off by default; existing documents are untouched until you pick a mood.
+- **Writing session timer** — optional Pomodoro-style countdown in the topbar with 25-/50-minute presets or a custom length, start/pause/resume/reset, a progress bar, and a quiet end-of-session message. Nothing is tracked or enforced. Off by default.
 
 ### Analytics
 - **Activity totals** — today, this week, this month, and this year; includes net document growth.

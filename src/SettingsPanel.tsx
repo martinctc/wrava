@@ -81,6 +81,12 @@ export function SettingsPanel({ settings, onSave, onClose }: {
             Emotional check-in
           </label>
           <p>Show an optional mood picker above the editor so you can note how a writing session felt. The choice is saved in the document's front matter and never required.</p>
+          <label className="settings-checkbox">
+            <input type="checkbox" checked={draft.showSessionTimer} onChange={(event) =>
+              setDraft({ ...draft, showSessionTimer: event.currentTarget.checked })} />
+            Writing session timer
+          </label>
+          <p>Show an optional Pomodoro-style countdown in the topbar to structure a focus session. Nothing is recorded or enforced; ignore it whenever you like.</p>
           <label htmlFor="setting-font-size">Editor text size: {draft.editorFontSize} px</label>
           <input id="setting-font-size" type="range" min={12} max={28} step={1}
             value={draft.editorFontSize} aria-valuetext={`${draft.editorFontSize} pixels`}
